@@ -80,3 +80,16 @@ test('archive ordinals cannot widen the source-reference bound on an overlapping
 test('oversized compressed reference ranges are rejected before allocating expanded arrays',async()=>{
  await assert.rejects(()=>decodeLegacyBytes(bytes([{...event(2000000,'oversized'),sourceEventSeqs:[[0,1500000]]}]),true,{recoverSequence:true}),/引用数量过大/)
 })
+test('accepted live originals are archived before the persistence writer flushes them',async()=>{
+ const value=event(0,'accepted live'),ctx={sessions:{get:()=>({header:{version:4,id:'live'},snapshotEvents:()=>[value]})},sessionPersistence:{open(){throw Error('unflushed persistence must not be used')}}}
+ assert.deepEqual((await readRawDshSession(ctx,'live')).events,[value])
+})
+test('an unsupported migration which wraps a sequence gap still recovers every physical row',async t=>{
+ const f=await fixture(t),ctx={sessionPersistence:{open:async()=>{throw Object.assign(Error('released sequence migration refused'),{name:'SessionFormatUnsupportedError'})},locate:()=>({kind:'jsonl',path:join(f.dir,'session.v4.jsonl.zstd')})},sessionQuery:{listSessions:async()=>[{header:f.raw.header}]}}
+ const raw=await readRawDshSession(ctx,'overlap');assert.deepEqual(raw.recovery.entries.map(x=>x.event),rows)
+})
+test('a directly exposed released-format sequence error is handled without accepting unrelated format errors',async t=>{
+ const f=await fixture(t),ctx={sessionPersistence:{open:async()=>{throw Object.assign(Error('released Session row 2 has seq gap (expected 2, got 1)'),{name:'SessionFormatError'})},locate:()=>({kind:'jsonl',path:join(f.dir,'session.v4.jsonl.zstd')})},sessionQuery:{listSessions:async()=>[{header:f.raw.header}]}}
+ assert.deepEqual((await readRawDshSession(ctx,'overlap')).recovery.entries.map(x=>x.event),rows)
+ ctx.sessionPersistence.open=async()=>{throw Object.assign(Error('other malformed source'),{name:'SessionFormatError'})};await assert.rejects(()=>readRawDshSession(ctx,'overlap'),/other malformed/)
+})

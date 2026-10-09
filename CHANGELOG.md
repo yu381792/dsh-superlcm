@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.26 — 2026-10-09
+
+- Keep historical sequence recovery aligned with the full SuperLcm adapter, including unsupported migrations that wrap a sequence gap.
+- Read accepted live events before an unflushed persistence log, and treat only missing delegation-depth metadata as the default value.
+
 ## 0.5.25 — 2026-10-09
 
 - Recover retained historical logs with overlapping or interleaved event numbers as physical-order evidence archives. Preserve every decoded event, its original sequence, the physical row, and the full immutable compressed source.

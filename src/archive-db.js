@@ -9,9 +9,9 @@ const hash=x=>createHash('sha256').update(x).digest('hex')
 // Accept only that missing annotation; conflicting presets and provenance stay
 // protected by the same identity check as before.
 export function archiveHeader(previous,header) {
-  const incoming={...header,delegationDepth:header.delegationDepth??0}
+  const incoming={...header,delegationDepth:header.delegationDepth===undefined?0:header.delegationDepth}
   if(!previous)return canonical(incoming)
-  const before={...previous,delegationDepth:previous.delegationDepth??0},after={...incoming}
+  const before={...previous,delegationDepth:previous.delegationDepth===undefined?0:previous.delegationDepth},after={...incoming}
   delete before.version;delete after.version
   if(before.agentPreset===undefined&&typeof after.agentPreset==='string')before.agentPreset=after.agentPreset
   if(after.agentPreset===undefined&&typeof before.agentPreset==='string')after.agentPreset=before.agentPreset

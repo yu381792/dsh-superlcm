@@ -34,6 +34,8 @@ export class ArchiveDatabase {
       CREATE TABLE IF NOT EXISTS sl_nodes(session TEXT NOT NULL,id TEXT NOT NULL,level INTEGER NOT NULL,first INTEGER NOT NULL,last INTEGER NOT NULL,summary TEXT NOT NULL,children TEXT NOT NULL,sources TEXT NOT NULL,createdAt INTEGER NOT NULL,PRIMARY KEY(session,id));
       CREATE INDEX IF NOT EXISTS sl_nodes_level ON sl_nodes(session,level,first);
       CREATE TABLE IF NOT EXISTS sl_jobs(session TEXT PRIMARY KEY,owner TEXT NOT NULL,revision TEXT NOT NULL,expires INTEGER NOT NULL,retry INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS sl_recoveries(session TEXT PRIMARY KEY,mode TEXT NOT NULL,discontinuities INTEGER NOT NULL,physicalRows INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS sl_recovered_events(session TEXT NOT NULL,ordinal INTEGER NOT NULL,sourceRow INTEGER NOT NULL,event TEXT NOT NULL,digest TEXT NOT NULL,original INTEGER NOT NULL,PRIMARY KEY(session,ordinal));
       CREATE TABLE IF NOT EXISTS sl_legacy_sources(session TEXT PRIMARY KEY,version INTEGER NOT NULL,sha256 TEXT NOT NULL,bytes BLOB NOT NULL);
     `)
   }
@@ -57,7 +59,35 @@ export class ArchiveDatabase {
       this.db.exec('COMMIT')
     }catch(error){this.db.exec('ROLLBACK');throw error}
   }
-  cursor(id){return (this.db.prepare('SELECT MAX(seq) AS seq FROM sl_events WHERE session=?').get(sessionId(id)).seq??-1)+1}
+  recovery(id){return this.db.prepare('SELECT mode,discontinuities,physicalRows FROM sl_recoveries WHERE session=?').get(sessionId(id))}
+  captureRecovered(header,recovery,source){
+    const id=sessionId(header.id),entries=recovery.entries
+    if(recovery.mode!=='physical-order'||!Array.isArray(entries))throw Error('旧会话恢复记录无效')
+    this.db.exec('BEGIN IMMEDIATE')
+    try{
+      const prior=this.db.prepare('SELECT header,title,updatedAt FROM sl_sessions WHERE id=?').get(id)
+      const identity=JSON.stringify(archiveHeader(prior?JSON.parse(prior.header):null,header))
+      this.verifyLegacyPrefix(id,entries.map(x=>x.event))
+      const previous=this.db.prepare('SELECT ordinal,sourceRow,digest FROM sl_recovered_events WHERE session=? ORDER BY ordinal').all(id)
+      if(previous.length&&previous.length!==entries.length)throw Error('原文已改变，拒绝覆盖归档')
+      let title=prior?.title||header.title||id,updatedAt=prior?.updatedAt??header.createdAt??0
+      const insert=this.db.prepare('INSERT INTO sl_recovered_events VALUES(?,?,?,?,?,?) ON CONFLICT(session,ordinal) DO NOTHING')
+      for(const [i,entry] of entries.entries()){
+        const {event,ordinal,sourceRow}=entry
+        if(ordinal!==i||!Number.isSafeInteger(sourceRow)||sourceRow<1||!Number.isSafeInteger(event.seq)||event.seq<0)throw Error('旧会话恢复记录无效')
+        const raw=JSON.stringify(event),digest=hash(JSON.stringify(canonical(event))),old=previous[i]
+        if(old&&(old.ordinal!==ordinal||old.sourceRow!==sourceRow||old.digest!==digest))throw Error('原文已改变，拒绝覆盖归档')
+        if(Number.isFinite(event.time))updatedAt=Math.max(updatedAt,event.time)
+        if(event.type==='session/title'&&typeof event.data?.title==='string')title=event.data.title
+        insert.run(id,ordinal,sourceRow,raw,digest,+original(event))
+      }
+      this.saveLegacySource(id,source)
+      this.db.prepare('INSERT INTO sl_sessions VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,header=excluded.header,updatedAt=excluded.updatedAt').run(id,String(title).slice(0,300),identity,updatedAt)
+      this.db.prepare('INSERT INTO sl_recoveries VALUES(?,?,?,?) ON CONFLICT(session) DO NOTHING').run(id,recovery.mode,recovery.discontinuities,recovery.physicalRows)
+      this.db.exec('COMMIT')
+    }catch(error){this.db.exec('ROLLBACK');throw error}
+  }
+  cursor(id){if(this.recovery(id))return this.db.prepare('SELECT COUNT(*) count FROM sl_recovered_events WHERE session=?').get(id).count;return (this.db.prepare('SELECT MAX(seq) AS seq FROM sl_events WHERE session=?').get(sessionId(id)).seq??-1)+1}
   legacySource(id){return this.db.prepare('SELECT version,sha256 FROM sl_legacy_sources WHERE session=?').get(sessionId(id))}
   verifyLegacyPrefix(id,events){
     if(!Array.isArray(events))throw Error('旧会话完整前缀未提供')
@@ -71,14 +101,23 @@ export class ArchiveDatabase {
   }
   sessions({query='',offset:from=0,limit:count=30}={}) {
     if(typeof query!=='string'||query.length>500)throw Error('搜索内容无效')
-    const rows=this.db.prepare(`SELECT s.id,s.title,s.updatedAt,(SELECT COUNT(*) FROM sl_events e WHERE e.session=s.id) eventCount,(SELECT COUNT(*) FROM sl_nodes n WHERE n.session=s.id) summaryCount FROM sl_sessions s WHERE instr(lower(s.title),lower(?))>0 ORDER BY s.updatedAt DESC LIMIT ? OFFSET ?`).all(query,limit(count)+1,offset(from))
+    const rows=this.db.prepare(`SELECT s.id,s.title,s.updatedAt,CASE WHEN EXISTS(SELECT 1 FROM sl_recoveries r WHERE r.session=s.id) THEN (SELECT COUNT(*) FROM sl_recovered_events e WHERE e.session=s.id) ELSE (SELECT COUNT(*) FROM sl_events e WHERE e.session=s.id) END eventCount,(SELECT COUNT(*) FROM sl_nodes n WHERE n.session=s.id) summaryCount FROM sl_sessions s WHERE instr(lower(s.title),lower(?))>0 ORDER BY s.updatedAt DESC LIMIT ? OFFSET ?`).all(query,limit(count)+1,offset(from))
     return {items:rows.slice(0,count),hasMore:rows.length>count}
   }
-  events(id,from=0,count=20){const rows=this.db.prepare('SELECT seq,event FROM sl_events WHERE session=? AND seq>=? ORDER BY seq LIMIT ?').all(sessionId(id),offset(from),limit(count)+1);return {items:rows.slice(0,count).map(x=>({seq:x.seq,type:JSON.parse(x.event).type,text:x.event})),next:rows.length>count?rows[count].seq:null}}
+  events(id,from=0,count=20){if(this.recovery(id)){
+    const rows=this.db.prepare('SELECT ordinal,sourceRow,event FROM sl_recovered_events WHERE session=? AND ordinal>=? ORDER BY ordinal LIMIT ?').all(sessionId(id),offset(from),limit(count)+1)
+    return {sequenceMode:'physical-order',items:rows.slice(0,count).map(x=>({seq:x.ordinal,sourceRow:x.sourceRow,sourceSeq:JSON.parse(x.event).seq,type:JSON.parse(x.event).type,text:x.event})),next:rows.length>count?rows[count].ordinal:null}
+  }const rows=this.db.prepare('SELECT seq,event FROM sl_events WHERE session=? AND seq>=? ORDER BY seq LIMIT ?').all(sessionId(id),offset(from),limit(count)+1);return {items:rows.slice(0,count).map(x=>({seq:x.seq,type:JSON.parse(x.event).type,text:x.event})),next:rows.length>count?rows[count].seq:null}}
   sourceRows(id,from=0){return this.db.prepare('SELECT seq AS ordinal,seq,event,text,tokens FROM sl_events WHERE session=? AND seq>=? AND original=1 ORDER BY seq').all(sessionId(id),offset(from))}
   nodes(id,level){return this.db.prepare('SELECT * FROM sl_nodes WHERE session=?'+(level===undefined?'':' AND level=?')+' ORDER BY first,createdAt').all(...(level===undefined?[sessionId(id)]:[sessionId(id),level])).map(node)}
   outline(id){const nodes=this.nodes(id),covered=new Set(nodes.filter(n=>n.level===0).flatMap(n=>n.sources)),rows=this.sourceRows(id),s=this.db.prepare('SELECT title FROM sl_sessions WHERE id=?').get(id);return {session:id,title:s?.title||id,nodes,total:rows.length,uncovered:rows.filter(e=>!covered.has(e.seq)).length}}
-  find({session,query,offset:from=0,limit:count=20}={}){if(typeof query!=='string'||!query.trim()||query.length>500)throw Error('请输入搜索内容');const args=session?[sessionId(session),query,limit(count)+1,offset(from)]:[query,limit(count)+1,offset(from)];const rows=this.db.prepare('SELECT session,seq,text FROM sl_events WHERE '+(session?'session=? AND ':'')+'instr(lower(text),lower(?))>0 ORDER BY session,seq LIMIT ? OFFSET ?').all(...args);return {items:rows.slice(0,count),next:rows.length>count?from+count:null}}
+  find({session,query,offset:from=0,limit:count=20}={}){if(typeof query!=='string'||!query.trim()||query.length>500)throw Error('请输入搜索内容');const args=session?[sessionId(session),query,limit(count)+1,offset(from)]:[query,limit(count)+1,offset(from)]
+    const rows=this.db.prepare(`SELECT * FROM (
+      SELECT session,seq,event AS text,NULL AS sourceRow,NULL AS sourceSeq,'event-sequence' AS sequenceMode FROM sl_events e WHERE NOT EXISTS(SELECT 1 FROM sl_recoveries r WHERE r.session=e.session)
+      UNION ALL SELECT session,ordinal AS seq,event AS text,sourceRow,json_extract(event,'$.seq') AS sourceSeq,'physical-order' AS sequenceMode FROM sl_recovered_events
+    ) WHERE ${session?'session=? AND ':''}instr(lower(text),lower(?))>0 ORDER BY session,seq LIMIT ? OFFSET ?`).all(...args)
+    return {items:rows.slice(0,count),next:rows.length>count?from+count:null}}
+
   lease(id,revision){const owner=randomUUID(),now=Date.now();const row=this.db.prepare(`INSERT INTO sl_jobs(session,owner,revision,expires) VALUES(?,?,?,?) ON CONFLICT(session) DO UPDATE SET owner=excluded.owner,revision=excluded.revision,expires=excluded.expires WHERE sl_jobs.expires<? AND sl_jobs.retry<=? RETURNING owner`).get(sessionId(id),owner,revision,now+45000,now,now);return row?.owner===owner?owner:null}
   renew(id,owner){return this.db.prepare('UPDATE sl_jobs SET expires=? WHERE session=? AND owner=?').run(Date.now()+45000,id,owner).changes===1}
   release(id,owner,failed=false){this.db.prepare('UPDATE sl_jobs SET expires=0,retry=? WHERE session=? AND owner=?').run(failed?Date.now()+60000:0,id,owner)}

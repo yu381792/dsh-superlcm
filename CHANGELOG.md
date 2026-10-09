@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.25 — 2026-10-09
+
+- Recover retained historical logs with overlapping or interleaved event numbers as physical-order evidence archives. Preserve every decoded event, its original sequence, the physical row, and the full immutable compressed source.
+- Recall and search expose explicit archive positions and original sequence numbers; conflicting records remain separately readable. Recovered logs are excluded from summary and compaction reconstruction.
+- Recovery commits source evidence and all records together, verifies any existing prefix, and rejects changed sources, malformed rows and stale fallback when a current-format artifact exists.
+
 ## 0.5.24 — 2026-10-09
 
 - 宿主无法恢复的极旧日志可作为历史原文归档：使用官方旧格式解码器严格读取所有压缩帧，不修写原始日志，不伪造结束事件。

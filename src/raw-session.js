@@ -5,9 +5,9 @@ export async function readRawDshSession(ctx,id,from=0) {
   if(persistence){
     let handle
     try{handle=await persistence.open(id,'read')}catch(error){
-      if(error?.name!=='SessionFormatUnsupportedError')throw error
+      if(!['SessionFormatUnsupportedError','SessionPersistenceCorruptionError'].includes(error?.name)||!ctx.sessionQuery||!persistence.locate)throw error
       const {readLegacyArchive}=await import('./legacy-archive.js')
-      return readLegacyArchive(ctx,persistence,id,from)
+      return readLegacyArchive(ctx,persistence,id,from,{recoverSequence:error.name==='SessionPersistenceCorruptionError'})
     }
     try{const {events}=await handle.read(from);return {header:handle.header,events,inheritedEventCount:handle.inheritedEventCount,close:()=>handle.close()}}
     catch(error){await handle.close();throw error}

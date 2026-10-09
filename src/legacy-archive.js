@@ -26,7 +26,7 @@ export async function legacyCodec(version){
  if(version===3)return (await import('@deepseek-ai/dsh-session-format-v2-to-v3')).releasedV3SessionFormatCodec
  throw Error('旧会话格式不受支持')
 }
-export async function decodeLegacyBytes(bytes,compressed=true){
+export async function decodeLegacyBytes(bytes,compressed=true,{recoverSequence=false}={}){
  const pieces=[];let decoded=0
  for(const [a,b] of compressed?zstdFrames(bytes):[[0,bytes.length]]){
   const piece=compressed?zstdDecompressSync(bytes.subarray(a,b),{maxOutputLength:32*1024*1024}):bytes
@@ -34,14 +34,57 @@ export async function decodeLegacyBytes(bytes,compressed=true){
  }
  const text=new TextDecoder('utf-8',{fatal:true}).decode(Buffer.concat(pieces))
  if(!text.endsWith('\n'))throw Error('旧会话最后一条记录不完整')
- const lines=text.slice(0,-1).split('\n'),physical=JSON.parse(lines.shift()),codec=await legacyCodec(physical.version),decoder=codec.createDecoder(physical,'strict'),events=[]
- const emitEvent=event=>{if(event.seq!==events.length)throw Error('原文序号不连续，拒绝遗漏归档');events.push(event)}
+ const lines=text.slice(0,-1).split('\n'),physical=JSON.parse(lines.shift()),codec=await legacyCodec(physical.version)
+ const rows=lines.map(line=>JSON.parse(line))
+ // Bound expansion before invoking the released decoder: a tiny physical row
+ // can otherwise request an enormous source-reference range.
+ for(const row of rows)if(Array.isArray(row.sourceEventSeqs)){
+  let count=0
+  for(const value of row.sourceEventSeqs){count+=Array.isArray(value)&&value.length===2?Math.max(0,value[1]-value[0]+1):1
+   if(count>1000000)throw Error('旧会话引用数量过大')}
+ }
+
+ const strict=()=>{
+  const decoder=codec.createDecoder(physical,'strict'),events=[]
+  const emitEvent=event=>{if(event.seq!==events.length)throw Error('原文序号不连续，拒绝遗漏归档');events.push(event)}
+  const collector={emitEvent,emitRun:run=>{for(const event of run.expand())emitEvent(event)}}
+  for(const row of rows)decoder.decodeRow(row,collector)
+  const inheritedEventCount=decoder.finish(collector)
+  return {header:decoder.header,events,inheritedEventCount}
+ }
+ try{return strict()}catch(error){if(!recoverSequence||!/has seq gap/.test(error.message))throw error}
+ // Recovery is an evidence archive, NOT a repaired DSH session. Several writers
+ // can interleave conflicting sequences. Validate every physical row with the
+ // released codec, retain its original event sequence and all duplicate records,
+ // and expose a separate physical-order ordinal for recall. Never feed this to
+ // current-format reconstruction, summarization or compaction.
+ const decoder=codec.createDecoder(physical,'strict'),entries=[];let rowIndex=0,sourceSeq=0,rowStart=0,discontinuities=0,expected=0,sourceEventSeqs
+ const emitEvent=event=>{
+  if(entries.length>=1000000)throw Error('旧会话事件数量过大')
+  const seq=sourceSeq+event.seq-rowStart
+  if(!Number.isSafeInteger(seq)||seq<0)throw Error('原文序号无效')
+  entries.push({ordinal:entries.length,sourceRow:rowIndex,event:{...event,seq,...(sourceEventSeqs===undefined?{}:{sourceEventSeqs})}})
+ }
  const collector={emitEvent,emitRun:run=>{for(const event of run.expand())emitEvent(event)}}
- for(const line of lines)decoder.decodeRow(JSON.parse(line),collector)
+ for(const [i,row] of rows.entries()){
+  rowIndex=i+1;const key=Object.hasOwn(row,'seq0')?'seq0':'seq';sourceSeq=row[key];rowStart=entries.length
+  if(!Number.isSafeInteger(sourceSeq)||sourceSeq<0)throw Error('原文序号无效')
+  if(sourceSeq!==expected)discontinuities++
+  // Source references are validated against the ORIGINAL sequence bound. Using
+  // the archive ordinal here could accept invalid references or reject a valid
+  // forward-numbered row. The validator parses before checking continuity.
+  const validator=codec.createDecoder(physical,'strict')
+  try{validator.decodeRow(row,{emitEvent(){},emitRun(){}})}catch(error){if(!/has seq gap/.test(error.message))throw error}
+  sourceEventSeqs=row.sourceEventSeqs===undefined?undefined:row.sourceEventSeqs.flatMap(x=>Array.isArray(x)?Array.from({length:x[1]-x[0]+1},(_,i)=>x[0]+i):[x])
+  const normalized={...row,[key]:rowStart};delete normalized.sourceEventSeqs
+  decoder.decodeRow(normalized,collector)
+  expected=sourceSeq+entries.length-rowStart
+ }
  const inheritedEventCount=decoder.finish(collector)
- return {header:decoder.header,events,inheritedEventCount}
+ return {header:decoder.header,events:entries.map(x=>x.event),inheritedEventCount,recovery:{mode:'physical-order',discontinuities,physicalRows:rows.length,entries}}
+
 }
-export async function readLegacyArchive(ctx,persistence,id,from=0){
+export async function readLegacyArchive(ctx,persistence,id,from=0,{recoverSequence=false}={}){
  const row=(await ctx.sessionQuery.listSessions()).find(row=>row.header.id===id)
  if(!row)throw Error('旧会话来源未找到')
  const location=persistence.locate?.(row.header)
@@ -58,7 +101,7 @@ export async function readLegacyArchive(ctx,persistence,id,from=0){
  if(!source||source.metadata.size>BigInt(MAX_BYTES))throw Error('旧会话文件不可用或过大')
  const bytes=await readFile(source.path),after=await stat(source.path,{bigint:true})
  if(['dev','ino','size','mtimeNs','ctimeNs'].some(k=>source.metadata[k]!==after[k])||BigInt(bytes.length)!==after.size)throw Error('旧会话读取期间发生变化')
- const raw=await decodeLegacyBytes(bytes,compressed)
+ const raw=await decodeLegacyBytes(bytes,compressed,{recoverSequence})
  const expectedVersion=Number(basename(source.path).match(/^session(?:\.v(\d+))?\.jsonl/)?.[1]??0)
  if(raw.header.version!==expectedVersion)throw Error('旧会话格式版本与文件名不匹配')
  for(const key of ['id','createdAt','cwd','parentSession','origin','isSeeded','delegationDepth','agentPreset']){
@@ -67,5 +110,5 @@ export async function readLegacyArchive(ctx,persistence,id,from=0){
  if(raw.header.id!==id)throw Error('会话来源身份改变，原记录保留')
  // A concurrent publication can happen while a large historical file decodes.
  try{await stat(location.path);throw Error('当前会话文件已存在，拒绝回读过期记录')}catch(e){if(e.code!=='ENOENT')throw e}
- return {...raw,legacyEvents:raw.events,events:raw.events.filter(e=>e.seq>=from),legacy:true,legacySource:{version:raw.header.version,sha256:createHash('sha256').update(bytes).digest('hex'),bytes},close(){}}
+ return {...raw,legacyEvents:raw.events,events:raw.recovery?raw.recovery.entries.slice(from).map(x=>x.event):raw.events.filter(e=>e.seq>=from),legacy:true,legacySource:{version:raw.header.version,sha256:createHash('sha256').update(bytes).digest('hex'),bytes},close(){}}
 }

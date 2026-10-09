@@ -49,19 +49,19 @@ Enabling both paths may produce separate model requests. Summary quality depends
 
 ## Install and update
 
-Requires **Node.js 22.16+**. Tested with **DSH 0.2.1-alpha.1**. Current plugin version: **0.5.24**.
+Requires **Node.js 22.16+**. Tested with **DSH 0.2.1-alpha.1**. Current plugin version: **0.5.25**.
 
 Build in the repository directory and install the generated archive with the official DSH command:
 
 ```sh
 npm pack
-dsh plugin --profile web add ./SuperLcm-0.5.24.tgz
+dsh plugin --profile web add ./SuperLcm-0.5.25.tgz
 ```
 
 Windows PowerShell:
 
 ```powershell
-dsh plugin --profile web add ".\SuperLcm-0.5.24.tgz"
+dsh plugin --profile web add ".\SuperLcm-0.5.25.tgz"
 ```
 
 Restart that DSH host and open **Plugins → SuperLcm → Summary settings**. Choose a model and enable background summaries. Optional takeover has its own Compaction tab.
@@ -76,6 +76,8 @@ Installing over the existing standalone `SuperLcm` package updates it while keep
 | `lcm_outline` | Inspect a session's layered summary outline |
 | `lcm_read` | Read complete originals by event number |
 
+Historical logs with broken numbering are archived in physical file order. Recall marks `physical-order` and provides the archive position, original sequence and physical row. Conflicting original sequence numbers are retained separately.
+
 Legacy tools `lcm_grep`, `lcm_describe`, `lcm_expand`, `lcm_expand_query`, `lcm_reindex` and `lcm_doctor` remain available for compaction-index inspection and maintenance.
 
 ## Data lives on the DSH host
@@ -87,10 +89,10 @@ The default database is `$DSH_HOME/SuperLcm/lcm.sqlite`, using the current user'
 ## More
 
 - **[Full SuperLcm project](https://github.com/yu381792/superlcm)**: shared archives, cross-tool handoffs and the complete product introduction.
-- [Architecture](docs/ARCHITECTURE.md) · [Upgrade notes](docs/UPGRADE-0.5.24.md) · [Validation scope](docs/VALIDATION.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Upgrade notes](docs/UPGRADE-0.5.25.md) · [Validation scope](docs/VALIDATION.md)
 - [Changelog](CHANGELOG.md) · [Design references and dependencies](THIRD_PARTY_NOTICES.md) · [MIT license](LICENSE)
 
-58 tests and a real macOS installation/upgrade check passed. Windows portability was reviewed; an actual Windows run was not performed. See the validation document for scope.
+68 tests and a real macOS installation/upgrade check passed. Windows portability was reviewed; an actual Windows run was not performed. See the validation document for scope.
 
 Development checks: `npm run validate`. Real install/upgrade check: `npm run test:install`. Repository Actions remain disabled.
 

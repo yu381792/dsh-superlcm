@@ -49,19 +49,19 @@ SuperLcm for DSH 为 **DeepSeek Harness（DSH）** 保存完整对话，在后�
 
 ## 安装与更新
 
-要求 **Node.js 22.16+**。本版实测宿主为 **DSH 0.2.1-alpha.1**，当前插件版本 **0.5.24**。
+要求 **Node.js 22.16+**。本版实测宿主为 **DSH 0.2.1-alpha.1**，当前插件版本 **0.5.25**。
 
 在仓库目录执行 `npm pack`，然后使用 DSH 官方命令安装生成的文件。以下示例在文件所在目录执行：
 
 ```sh
 npm pack
-dsh plugin --profile web add ./SuperLcm-0.5.24.tgz
+dsh plugin --profile web add ./SuperLcm-0.5.25.tgz
 ```
 
 Windows PowerShell 可使用：
 
 ```powershell
-dsh plugin --profile web add ".\SuperLcm-0.5.24.tgz"
+dsh plugin --profile web add ".\SuperLcm-0.5.25.tgz"
 ```
 
 重启对应 DSH 宿主，打开 **插件 → SuperLcm → 摘要设置**，选择模型并开启后台摘要。压缩接管在独立的「压缩」页中选择。
@@ -76,6 +76,8 @@ dsh plugin --profile web add ".\SuperLcm-0.5.24.tgz"
 | `lcm_outline` | 查看会话的分层摘要目录 |
 | `lcm_read` | 按事件编号读取完整原文 |
 
+编号损坏的旧日志按文件顺序归档。读取结果会标明 `physical-order`，并分别提供归档位置、原编号和原文件行号，重复编号的内容全部保留。
+
 旧版工具 `lcm_grep`、`lcm_describe`、`lcm_expand`、`lcm_expand_query`、`lcm_reindex`、`lcm_doctor` 继续用于压缩索引的查阅和维护。
 
 ## 数据保存在运行 DSH 的机器上
@@ -87,10 +89,10 @@ dsh plugin --profile web add ".\SuperLcm-0.5.24.tgz"
 ## 了解更多
 
 - **[完整 SuperLcm 项目](https://github.com/yu381792/superlcm)**：多工具共享归档、跨工具接续和完整产品介绍。
-- [独立版设计](docs/ARCHITECTURE.md) · [升级说明](docs/UPGRADE-0.5.24.md) · [验证范围](docs/VALIDATION.md)
+- [独立版设计](docs/ARCHITECTURE.md) · [升级说明](docs/UPGRADE-0.5.25.md) · [验证范围](docs/VALIDATION.md)
 - [更新记录](CHANGELOG.md) · [参考机制与依赖](THIRD_PARTY_NOTICES.md) · [MIT 许可](LICENSE)
 
-本版通过 58 项测试和 macOS 真实安装升级验证。Windows 代码兼容审查已完成，Windows 实机测试未执行，具体范围见验证文档。
+本版通过 68 项测试和 macOS 真实安装升级验证。Windows 代码兼容审查已完成，Windows 实机测试未执行，具体范围见验证文档。
 
 开发检查：`npm run validate`。真实安装升级验证：`npm run test:install`。GitHub 自动测试保持关闭。
 

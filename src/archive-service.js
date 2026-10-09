@@ -28,6 +28,8 @@ export class ArchiveService {
     try{
       if(this.db.legacySource(id)&&!raw.legacy)throw Error('旧会话格式已变化，拒绝混合归档')
       if(raw.legacySource)this.jobs.delete(id)
+      if(raw.recovery){this.db.captureRecovered(raw.header,raw.recovery,raw.legacySource);return}
+      if(this.db.recovery(id))throw Error('旧会话格式已变化，拒绝混合归档')
       const legacy=raw.legacySource?{legacySource:raw.legacySource,legacyEvents:raw.legacyEvents}:undefined
       for(let i=0;i<raw.events.length;i+=500){if(this.stopped)return;this.db.capture(raw.header,raw.events.slice(i,i+500),i===0?legacy:undefined);await new Promise(r=>setImmediate(r))}
       if(!raw.events.length)this.db.capture(raw.header,[],legacy)
@@ -74,9 +76,13 @@ export class ArchiveService {
   }
   sessions(input){
     const value=this.db.sessions(input)
-    return {...value,items:value.items.map(item=>({...item,summaryCount:item.summaryCount+this.native.listNodes(item.id,{limit:5000,status:'ready'}).filter(n=>semanticKind(this.native,item.id,n.nodeId)!=='assembled').length}))}
+    return {...value,items:value.items.map(item=>({...item,summaryCount:this.db.recovery(item.id)?0:item.summaryCount+this.native.listNodes(item.id,{limit:5000,status:'ready'}).filter(n=>semanticKind(this.native,item.id,n.nodeId)!=='assembled').length}))}
   }
   outline(id){
+    const recovery=this.db.recovery(id)
+    if(recovery){const total=this.db.db.prepare('SELECT COUNT(*) count FROM sl_recovered_events WHERE session=? AND original=1').get(sessionId(id)).count
+      return {session:id,title:this.db.outline(id).title,nodes:[],total,uncovered:total,recovery,sequenceMode:'physical-order',notice:'旧日志编号重叠或乱序，全部原始记录按文件顺序归档。读取位置是归档顺序号，sourceSeq 是原始编号。此会话仅供原文检索。'}
+    }
     const value=this.db.outline(id),native=this.native.listNodes(id,{limit:5000,status:'ready'})
     const original=new Set(this.db.sourceRows(id).map(e=>e.seq)),memo=new Map()
     const sources=(key,seen=new Set())=>{
@@ -95,7 +101,7 @@ export class ArchiveService {
   }
   registerTools(){const json={schema:{type:'json'},render:(_args,value)=>[{type:'text',text:JSON.stringify(value)}]},resolve=(args,exec)=>args.session||exec?.agent?.session?.id
     const specs=[['lcm_outline','查看 DSH 会话的后台摘要目录；摘要用于导航，精确结论请查原文。',{session:{type:'string'}},(a,e)=>this.outline(resolve(a,e))],
-      ['lcm_read','按事件编号读取 DSH 完整原文。',{session:{type:'string'},offset:{type:'integer'},limit:{type:'integer'}},(a,e)=>this.db.events(resolve(a,e),a.offset,a.limit)],
+      ['lcm_read','读取 DSH 完整原文。编号损坏的旧日志按归档顺序分页，并返回原始编号 sourceSeq 和文件行号 sourceRow。',{session:{type:'string'},offset:{type:'integer'},limit:{type:'integer'}},(a,e)=>this.db.events(resolve(a,e),a.offset,a.limit)],
       ['lcm_find','搜索已归档的 DSH 会话原文。',{session:{type:'string'},query:{type:'string'},offset:{type:'integer'},limit:{type:'integer'}},a=>this.db.find(a)]]
     for(const [name,description,parameters,run] of specs)this.ctx.tools.register(defineTool({name,description,parameters,output:json,execute:async(args,exec)=>{await this.drain();return run(args,exec)},presentCall:args=>({card:'generic',title:name,kind:'read',rawInput:args})}))
   }

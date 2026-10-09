@@ -34,14 +34,16 @@ export class ArchiveDatabase {
       CREATE TABLE IF NOT EXISTS sl_nodes(session TEXT NOT NULL,id TEXT NOT NULL,level INTEGER NOT NULL,first INTEGER NOT NULL,last INTEGER NOT NULL,summary TEXT NOT NULL,children TEXT NOT NULL,sources TEXT NOT NULL,createdAt INTEGER NOT NULL,PRIMARY KEY(session,id));
       CREATE INDEX IF NOT EXISTS sl_nodes_level ON sl_nodes(session,level,first);
       CREATE TABLE IF NOT EXISTS sl_jobs(session TEXT PRIMARY KEY,owner TEXT NOT NULL,revision TEXT NOT NULL,expires INTEGER NOT NULL,retry INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS sl_legacy_sources(session TEXT PRIMARY KEY,version INTEGER NOT NULL,sha256 TEXT NOT NULL,bytes BLOB NOT NULL);
     `)
   }
-  capture(header,events) {
+  capture(header,events,{legacySource,legacyEvents}={}) {
     const id=sessionId(header.id)
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const prior=this.db.prepare('SELECT header,title,updatedAt FROM sl_sessions WHERE id=?').get(id)
       const identity=JSON.stringify(archiveHeader(prior?JSON.parse(prior.header):null,header))
+      if(legacySource)this.verifyLegacyPrefix(id,legacyEvents)
       let title=prior?.title||header.meta?.title||header.title||id
       let next=this.cursor(id),updatedAt=prior?.updatedAt??header.createdAt??0
       for(const event of events){if(Number.isFinite(event.time))updatedAt=Math.max(updatedAt,event.time);if(!Number.isSafeInteger(event.seq)||event.seq<0)throw Error('原文序号无效')
@@ -51,10 +53,22 @@ export class ArchiveDatabase {
         if(!saved){if(event.seq!==next)throw Error('原文序号不连续，拒绝遗漏归档');this.db.prepare('INSERT INTO sl_events VALUES(?,?,?,?,?,?,?)').run(id,event.seq,raw,digest,raw,estimateSummaryTokens(raw),+original(event));next++}
       }
       this.db.prepare('INSERT INTO sl_sessions VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,header=excluded.header,updatedAt=excluded.updatedAt').run(id,String(title).slice(0,300),identity,updatedAt)
+      if(legacySource)this.saveLegacySource(id,legacySource)
       this.db.exec('COMMIT')
     }catch(error){this.db.exec('ROLLBACK');throw error}
   }
   cursor(id){return (this.db.prepare('SELECT MAX(seq) AS seq FROM sl_events WHERE session=?').get(sessionId(id)).seq??-1)+1}
+  legacySource(id){return this.db.prepare('SELECT version,sha256 FROM sl_legacy_sources WHERE session=?').get(sessionId(id))}
+  verifyLegacyPrefix(id,events){
+    if(!Array.isArray(events))throw Error('旧会话完整前缀未提供')
+    const saved=this.db.prepare('SELECT seq,digest FROM sl_events WHERE session=? ORDER BY seq').all(sessionId(id))
+    for(const row of saved){const event=events[row.seq];if(!event||event.seq!==row.seq||hash(JSON.stringify(canonical(event)))!==row.digest)throw Error('原文已改变，拒绝覆盖归档')}
+  }
+  saveLegacySource(id,source){
+    const digest=hash(source.bytes);if(digest!==source.sha256)throw Error('旧会话原始文件校验失败')
+    const prior=this.legacySource(id);if(prior&&prior.sha256!==digest)throw Error('原文已改变，拒绝覆盖归档')
+    this.db.prepare('INSERT INTO sl_legacy_sources VALUES(?,?,?,?) ON CONFLICT(session) DO NOTHING').run(sessionId(id),source.version,digest,source.bytes)
+  }
   sessions({query='',offset:from=0,limit:count=30}={}) {
     if(typeof query!=='string'||query.length>500)throw Error('搜索内容无效')
     const rows=this.db.prepare(`SELECT s.id,s.title,s.updatedAt,(SELECT COUNT(*) FROM sl_events e WHERE e.session=s.id) eventCount,(SELECT COUNT(*) FROM sl_nodes n WHERE n.session=s.id) summaryCount FROM sl_sessions s WHERE instr(lower(s.title),lower(?))>0 ORDER BY s.updatedAt DESC LIMIT ? OFFSET ?`).all(query,limit(count)+1,offset(from))

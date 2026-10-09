@@ -3,7 +3,12 @@
 export async function readRawDshSession(ctx,id,from=0) {
   const persistence=ctx.get?.('sessionPersistence')||ctx.sessionPersistence
   if(persistence){
-    const handle=await persistence.open(id,'read')
+    let handle
+    try{handle=await persistence.open(id,'read')}catch(error){
+      if(error?.name!=='SessionFormatUnsupportedError')throw error
+      const {readLegacyArchive}=await import('./legacy-archive.js')
+      return readLegacyArchive(ctx,persistence,id,from)
+    }
     try{const {events}=await handle.read(from);return {header:handle.header,events,inheritedEventCount:handle.inheritedEventCount,close:()=>handle.close()}}
     catch(error){await handle.close();throw error}
   }

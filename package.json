@@ -1,6 +1,6 @@
 {
   "name": "SuperLcm",
-  "version": "0.5.23",
+  "version": "0.5.24",
   "description": "为 DSH 保存完整原文、生成后台分层摘要并精确召回。摘要和可选压缩均在插件设置页管理。",
   "type": "module",
   "main": "./src/runtime.js",
@@ -84,7 +84,10 @@
     "@deepseek-ai/dsh-client-connection": "*",
     "@deepseek-ai/dsh-llm-pi-ai": "*",
     "@deepseek-ai/dsh-llm-deepseek-api-key": "*",
-    "@deepseek-ai/dsh-llm-deepseek-account": "*"
+    "@deepseek-ai/dsh-llm-deepseek-account": "*",
+    "@deepseek-ai/dsh-session-format-v0-to-v1": "*",
+    "@deepseek-ai/dsh-session-format-v1-to-v2": "*",
+    "@deepseek-ai/dsh-session-format-v2-to-v3": "*"
   },
   "peerDependenciesMeta": {
     "@deepseek-ai/dsh-compaction": {
@@ -118,6 +121,15 @@
       "optional": true
     },
     "@deepseek-ai/dsh-llm-deepseek-account": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-format-v0-to-v1": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-format-v1-to-v2": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-format-v2-to-v3": {
       "optional": true
     }
   },

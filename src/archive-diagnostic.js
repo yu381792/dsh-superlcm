@@ -1,6 +1,7 @@
 // Never forward provider bodies, transcript excerpts, paths or credentials to
 // the settings page. Classify locally and publish only fixed explanations.
 const reasons=[
+  [/旧会话格式已变化/,'LEGACY_FORMAT_CHANGED','旧会话已转换为其他格式，需核对后续记录，原归档保留'],
   [/会话来源身份改变/,'HEADER_IDENTITY','会话来源信息冲突，归档已暂停'],
   [/原文已改变/,'SOURCE_CHANGED','已存原文与当前记录不一致，归档已暂停'],
   [/原文序号不连续/,'SOURCE_GAP','原文事件序号不连续，归档已暂停'],

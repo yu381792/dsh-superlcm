@@ -26,9 +26,12 @@ export class ArchiveService {
     const live=this.ctx.sessions.get(id),cursor=this.db.cursor(id),incremental=cursor>0
     const raw=live&&incremental?{header:live.header,events:Array.from({length:Math.max(0,live.seq-cursor)},(_,i)=>live.eventAt(cursor+i)),close(){}}:await readRawDshSession(this.ctx,id,cursor)
     try{
-      for(let i=0;i<raw.events.length;i+=500){if(this.stopped)return;this.db.capture(raw.header,raw.events.slice(i,i+500));await new Promise(r=>setImmediate(r))}
-      if(!raw.events.length)this.db.capture(raw.header,[])
-      if(!incremental||raw.events.some(e=>e.type==='compaction/end')){
+      if(this.db.legacySource(id)&&!raw.legacy)throw Error('旧会话格式已变化，拒绝混合归档')
+      if(raw.legacySource)this.jobs.delete(id)
+      const legacy=raw.legacySource?{legacySource:raw.legacySource,legacyEvents:raw.legacyEvents}:undefined
+      for(let i=0;i<raw.events.length;i+=500){if(this.stopped)return;this.db.capture(raw.header,raw.events.slice(i,i+500),i===0?legacy:undefined);await new Promise(r=>setImmediate(r))}
+      if(!raw.events.length)this.db.capture(raw.header,[],legacy)
+      if(!raw.legacy&&!this.db.legacySource(id)&&(!incremental||raw.events.some(e=>e.type==='compaction/end'))){
         const full=incremental&&!live?await readRawDshSession(this.ctx,id):null
         try{reindexSession(this.native,{id,header:raw.header,snapshotEvents:()=>full?.events||(incremental?live.snapshotEvents():raw.events)})}finally{await full?.close()}
       }
@@ -47,6 +50,9 @@ export class ArchiveService {
     }})().finally(()=>{this.running=null;if(this.dirty.size&&!this.stopped)void this.drain()});return this.running
   }
   async summarize(id){const doc=readSettings(this.file);if(!doc.settings.summaryEnabled)return 'disabled'
+    // Historical decoder output is exact recall data, not current-format input
+    // for summary generation or native compaction checkpoint reconstruction.
+    if(this.db.legacySource(id))return 'legacy'
     const owner=this.db.lease(id,doc.revision);if(!owner)return 'busy'
     const controller=new AbortController();this.controllers.add(controller);let failed=false
     const heartbeat=setInterval(()=>{try{if(!this.db.renew(id,owner))controller.abort(Error('摘要任务已失去归属'));if(readSettings(this.file).revision!==doc.revision)controller.abort(Error('摘要设置已变化'))}catch{controller.abort(Error('摘要设置不可用'))}},10000);heartbeat.unref()

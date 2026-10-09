@@ -49,19 +49,19 @@ SuperLcm for DSH 为 **DeepSeek Harness（DSH）** 保存完整对话，在后�
 
 ## 安装与更新
 
-要求 **Node.js 22.16+**。本版实测宿主为 **DSH 0.2.1-alpha.1**，当前插件版本 **0.5.22**。
+要求 **Node.js 22.16+**。本版实测宿主为 **DSH 0.2.1-alpha.1**，当前插件版本 **0.5.23**。
 
 在仓库目录执行 `npm pack`，然后使用 DSH 官方命令安装生成的文件。以下示例在文件所在目录执行：
 
 ```sh
 npm pack
-dsh plugin --profile web add ./SuperLcm-0.5.22.tgz
+dsh plugin --profile web add ./SuperLcm-0.5.23.tgz
 ```
 
 Windows PowerShell 可使用：
 
 ```powershell
-dsh plugin --profile web add ".\SuperLcm-0.5.22.tgz"
+dsh plugin --profile web add ".\SuperLcm-0.5.23.tgz"
 ```
 
 重启对应 DSH 宿主，打开 **插件 → SuperLcm → 摘要设置**，选择模型并开启后台摘要。压缩接管在独立的「压缩」页中选择。
@@ -87,10 +87,10 @@ dsh plugin --profile web add ".\SuperLcm-0.5.22.tgz"
 ## 了解更多
 
 - **[完整 SuperLcm 项目](https://github.com/yu381792/superlcm)**：多工具共享归档、跨工具接续和完整产品介绍。
-- [独立版设计](docs/ARCHITECTURE.md) · [升级说明](docs/UPGRADE-0.5.22.md) · [验证范围](docs/VALIDATION.md)
+- [独立版设计](docs/ARCHITECTURE.md) · [升级说明](docs/UPGRADE-0.5.23.md) · [验证范围](docs/VALIDATION.md)
 - [更新记录](CHANGELOG.md) · [参考机制与依赖](THIRD_PARTY_NOTICES.md) · [MIT 许可](LICENSE)
 
-本版通过 43 项测试和 macOS 真实安装升级验证。Windows 代码兼容审查已完成，Windows 实机测试未执行，具体范围见验证文档。
+本版通过 50 项测试和 macOS 真实安装升级验证。Windows 代码兼容审查已完成，Windows 实机测试未执行，具体范围见验证文档。
 
 开发检查：`npm run validate`。真实安装升级验证：`npm run test:install`。GitHub 自动测试保持关闭。
 

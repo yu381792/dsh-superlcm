@@ -8,7 +8,7 @@ export async function modelCatalog(ctx){const active=await ctx.llm.listProviders
   return items
 }
 export function pluginApi(ctx,archive,owner,file){let saving=false
-  const read=async()=>{const doc=readSettings(file);return {version,revision:doc.revision,settings:doc.settings,catalog:await modelCatalog(ctx),runtime:{takeover:owner.mode==='superlcm',mode:owner.mode==='superlcm'?'superlcm':'native',archive:true,lastError:archive.lastError}}}
+  const read=async()=>{const doc=readSettings(file);return {version,revision:doc.revision,settings:doc.settings,catalog:await modelCatalog(ctx),runtime:{takeover:owner.mode==='superlcm',mode:owner.mode==='superlcm'?'superlcm':'native',archive:true,lastError:archive.lastError,lastDiagnostic:archive.lastDiagnostic}}}
   const handlers={read,save:async payload=>{if(saving)throw Error('设置正在保存');saving=true
       try{saveSettings(payload,await modelCatalog(ctx),file);archive.changed();await owner.reload();return await read()}finally{saving=false}},
     sessions:payload=>archive.sessions(payload||{}),outline:payload=>archive.outline(payload?.session),

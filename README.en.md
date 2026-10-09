@@ -49,19 +49,19 @@ Enabling both paths may produce separate model requests. Summary quality depends
 
 ## Install and update
 
-Requires **Node.js 22.16+**. Tested with **DSH 0.2.1-alpha.1**. Current plugin version: **0.5.22**.
+Requires **Node.js 22.16+**. Tested with **DSH 0.2.1-alpha.1**. Current plugin version: **0.5.23**.
 
 Build in the repository directory and install the generated archive with the official DSH command:
 
 ```sh
 npm pack
-dsh plugin --profile web add ./SuperLcm-0.5.22.tgz
+dsh plugin --profile web add ./SuperLcm-0.5.23.tgz
 ```
 
 Windows PowerShell:
 
 ```powershell
-dsh plugin --profile web add ".\SuperLcm-0.5.22.tgz"
+dsh plugin --profile web add ".\SuperLcm-0.5.23.tgz"
 ```
 
 Restart that DSH host and open **Plugins → SuperLcm → Summary settings**. Choose a model and enable background summaries. Optional takeover has its own Compaction tab.
@@ -87,10 +87,10 @@ The default database is `$DSH_HOME/SuperLcm/lcm.sqlite`, using the current user'
 ## More
 
 - **[Full SuperLcm project](https://github.com/yu381792/superlcm)**: shared archives, cross-tool handoffs and the complete product introduction.
-- [Architecture](docs/ARCHITECTURE.md) · [Upgrade notes](docs/UPGRADE-0.5.22.md) · [Validation scope](docs/VALIDATION.md)
+- [Architecture](docs/ARCHITECTURE.md) · [Upgrade notes](docs/UPGRADE-0.5.23.md) · [Validation scope](docs/VALIDATION.md)
 - [Changelog](CHANGELOG.md) · [Design references and dependencies](THIRD_PARTY_NOTICES.md) · [MIT license](LICENSE)
 
-43 tests and a real macOS installation/upgrade check passed. Windows portability was reviewed; an actual Windows run was not performed. See the validation document for scope.
+50 tests and a real macOS installation/upgrade check passed. Windows portability was reviewed; an actual Windows run was not performed. See the validation document for scope.
 
 Development checks: `npm run validate`. Real install/upgrade check: `npm run test:install`. Repository Actions remain disabled.
 

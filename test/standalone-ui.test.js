@@ -209,6 +209,14 @@ test('disabling takeover hides its status badge and retained runtime error immed
   assert.doesNotMatch(app.text(), /正在接管|等待保存后接管|宿主接管故障提醒/);
 });
 
+test('background archive failures are visible in both tabs even when takeover is off', async (t) => {
+  const app = await mount(t, { settings: { takeover: false }, runtime: { takeover: false, mode: 'native',
+    lastError: '会话来源信息冲突（HEADER_IDENTITY）。原文保留。', lastDiagnostic: { stage: 'capture', code: 'HEADER_IDENTITY' } } });
+  assert.match(app.text(), /HEADER_IDENTITY/);
+  await app.click('压缩');assert.match(app.text(), /HEADER_IDENTITY/);
+  assert.doesNotMatch(app.text(), /正在接管|等待保存后接管/);
+});
+
 test('custom K Token values and integer percentages save in server units and invalid values stay local', async (t) => {
   const app = await mount(t);
   await app.click('摘要设置'); await app.click('自定义'); await app.change('每个摘要分块', 32);

@@ -4,6 +4,20 @@ import {estimateSummaryTokens} from './summary-tokens.js'
 import {isCompactCheckpointSource} from '@deepseek-ai/dsh-compaction'
 const canonical=x=>Array.isArray(x)?x.map(canonical):x&&typeof x==='object'?Object.fromEntries(Object.keys(x).sort().map(k=>[k,canonical(x[k])])):x
 const hash=x=>createHash('sha256').update(x).digest('hex')
+// Storage versions describe the encoding, not the conversation identity. Older
+// live headers can also omit the preset later supplied by the durable backend.
+// Accept only that missing annotation; conflicting presets and provenance stay
+// protected by the same identity check as before.
+export function archiveHeader(previous,header) {
+  const incoming={...header,delegationDepth:header.delegationDepth??0}
+  if(!previous)return canonical(incoming)
+  const before={...previous,delegationDepth:previous.delegationDepth??0},after={...incoming}
+  delete before.version;delete after.version
+  if(before.agentPreset===undefined&&typeof after.agentPreset==='string')before.agentPreset=after.agentPreset
+  if(after.agentPreset===undefined&&typeof before.agentPreset==='string')after.agentPreset=before.agentPreset
+  if(JSON.stringify(canonical(before))!==JSON.stringify(canonical(after)))throw Error('会话来源身份改变，原记录保留')
+  return canonical({...previous,...incoming,...(incoming.agentPreset===undefined&&previous.agentPreset!==undefined?{agentPreset:previous.agentPreset}:{})})
+}
 export const sessionId=id=>{if(typeof id!=='string'||!/^[\w.-]{1,190}$/.test(id))throw Error('会话编号无效');return id}
 export const offset=value=>{if(value===undefined)return 0;if(!Number.isSafeInteger(value)||value<0)throw Error('分页位置无效');return value}
 export const limit=(value=30,max=100)=>{if(!Number.isSafeInteger(value)||value<1||value>max)throw Error('分页大小无效');return value}
@@ -23,11 +37,11 @@ export class ArchiveDatabase {
     `)
   }
   capture(header,events) {
-    const id=sessionId(header.id),identity=JSON.stringify(canonical({...header,delegationDepth:header.delegationDepth??0}))
+    const id=sessionId(header.id)
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const prior=this.db.prepare('SELECT header,title,updatedAt FROM sl_sessions WHERE id=?').get(id)
-      if(prior&&JSON.stringify(canonical({...JSON.parse(prior.header),delegationDepth:JSON.parse(prior.header).delegationDepth??0}))!==identity)throw Error('会话来源身份改变，原记录保留')
+      const identity=JSON.stringify(archiveHeader(prior?JSON.parse(prior.header):null,header))
       let title=prior?.title||header.meta?.title||header.title||id
       let next=this.cursor(id),updatedAt=prior?.updatedAt??header.createdAt??0
       for(const event of events){if(Number.isFinite(event.time))updatedAt=Math.max(updatedAt,event.time);if(!Number.isSafeInteger(event.seq)||event.seq<0)throw Error('原文序号无效')
@@ -36,7 +50,7 @@ export class ArchiveDatabase {
         if(saved&&saved.digest!==digest)throw Error('原文已改变，拒绝覆盖归档')
         if(!saved){if(event.seq!==next)throw Error('原文序号不连续，拒绝遗漏归档');this.db.prepare('INSERT INTO sl_events VALUES(?,?,?,?,?,?,?)').run(id,event.seq,raw,digest,raw,estimateSummaryTokens(raw),+original(event));next++}
       }
-      this.db.prepare('INSERT INTO sl_sessions VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,updatedAt=excluded.updatedAt').run(id,String(title).slice(0,300),identity,updatedAt)
+      this.db.prepare('INSERT INTO sl_sessions VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,header=excluded.header,updatedAt=excluded.updatedAt').run(id,String(title).slice(0,300),identity,updatedAt)
       this.db.exec('COMMIT')
     }catch(error){this.db.exec('ROLLBACK');throw error}
   }

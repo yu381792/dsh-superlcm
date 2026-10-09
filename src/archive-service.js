@@ -8,15 +8,20 @@ import {readSettings} from './settings.js'
 import {summarySessionId} from './summary-session.js'
 import {reindexSession,nodeLevel} from './core.js'
 import {semanticKind,semanticFrontier} from './tree-semantics.js'
+import {archiveDiagnostic} from './archive-diagnostic.js'
 export class ArchiveService {
   constructor(ctx,native,file) {
-    this.ctx=ctx;this.native=native;this.file=file;this.db=new ArchiveDatabase(native.path);this.dirty=new Set();this.jobs=new Set();this.stopped=false;this.controllers=new Set()
+    this.ctx=ctx;this.native=native;this.file=file;this.db=new ArchiveDatabase(native.path);this.dirty=new Set();this.jobs=new Set();this.stopped=false;this.controllers=new Set();this.failures=new Map()
     this.onEvent=(session,event)=>{this.dirty.add(session.id);if(event?.type==='turn/end')this.jobs.add(session.id);void this.drain()}
     ctx.on('session/event',this.onEvent)
     ctx.on('ready',()=>{void this.import()})
     this.registerTools()
     ctx.effect(()=>()=>this.close())
   }
+  get lastDiagnostic(){return [...this.failures.values()].at(-1)}
+  get lastError(){return this.lastDiagnostic?.message}
+  failed(error,session,stage){const diagnostic=archiveDiagnostic(error,{session,stage}),key=`${session}:${stage}`;this.failures.delete(key);this.failures.set(key,diagnostic);this.ctx.logger?.warn?.(diagnostic.message)}
+  recovered(session,stage){this.failures.delete(`${session}:${stage}`)}
   async capture(id) {
     const live=this.ctx.sessions.get(id),cursor=this.db.cursor(id),incremental=cursor>0
     const raw=live&&incremental?{header:live.header,events:Array.from({length:Math.max(0,live.seq-cursor)},(_,i)=>live.eventAt(cursor+i)),close(){}}:await readRawDshSession(this.ctx,id,cursor)
@@ -30,21 +35,22 @@ export class ArchiveService {
     }finally{await raw.close()}
   }
   async import(){if(this.importing)return {scheduled:true};this.importing=true
-    try{for(const {header} of await this.ctx.sessionQuery.listSessions())this.dirty.add(header.id);void this.drain()}catch{this.lastError='历史归档读取失败，请检查 DSH 日志'}finally{this.importing=false}
+    try{for(const {header} of await this.ctx.sessionQuery.listSessions())this.dirty.add(header.id);this.recovered('@history','capture');void this.drain()}catch(error){this.failed(error,'@history','capture')}finally{this.importing=false}
     return {scheduled:true}
   }
   schedule(id){sessionId(id);if(!readSettings(this.file).settings.summaryEnabled)throw Error('请先开启后台摘要并选择模型');this.dirty.add(id);this.jobs.add(id);void this.drain();return {scheduled:true}}
   changed(){for(const controller of this.controllers)controller.abort(Error('摘要设置已变化'))}
   async drain(){if(this.running||this.stopped)return this.running
     this.running=(async()=>{while(this.dirty.size&&!this.stopped){const id=this.dirty.values().next().value;this.dirty.delete(id)
-      try{await this.capture(id);if(this.dirty.has(id))continue;if(this.jobs.delete(id))await this.summarize(id)}catch{this.lastError='后台归档或摘要失败，原文保留，请检查 DSH 日志';this.ctx.logger?.warn?.(this.lastError)}
+      let stage='capture'
+      try{await this.capture(id);this.recovered(id,'capture');if(this.dirty.has(id))continue;if(this.jobs.delete(id)){stage='summary';const result=await this.summarize(id);if(result==='complete')this.recovered(id,'summary')}}catch(error){this.failed(error,id,stage)}
     }})().finally(()=>{this.running=null;if(this.dirty.size&&!this.stopped)void this.drain()});return this.running
   }
-  async summarize(id){const doc=readSettings(this.file);if(!doc.settings.summaryEnabled)return
-    const owner=this.db.lease(id,doc.revision);if(!owner)return
+  async summarize(id){const doc=readSettings(this.file);if(!doc.settings.summaryEnabled)return 'disabled'
+    const owner=this.db.lease(id,doc.revision);if(!owner)return 'busy'
     const controller=new AbortController();this.controllers.add(controller);let failed=false
     const heartbeat=setInterval(()=>{try{if(!this.db.renew(id,owner))controller.abort(Error('摘要任务已失去归属'));if(readSettings(this.file).revision!==doc.revision)controller.abort(Error('摘要设置已变化'))}catch{controller.abort(Error('摘要设置不可用'))}},10000);heartbeat.unref()
-    try{for(let work;(work=archiveWork(this.db,id,doc.settings));){controller.signal.throwIfAborted();if(readSettings(this.file).revision!==doc.revision)break
+    try{for(let work;(work=archiveWork(this.db,id,doc.settings));){controller.signal.throwIfAborted();if(readSettings(this.file).revision!==doc.revision)return 'cancelled'
       const timeout=AbortSignal.timeout(180000),signal=AbortSignal.any([controller.signal,timeout]),route={provider:doc.settings.summaryProvider,model:doc.settings.summaryModel}
       let text='',reason=null
       for await(const chunk of this.ctx.llm.stream({...route,sessionId:summarySessionId(id,route),purpose:'compaction',maxTokens:2048,signal,messages:[{role:'system',content:[{type:'text',text:SUMMARY_SYSTEM}]},{role:'user',content:[{type:'text',text:buildSummaryPrompt(work.content,{...work,kind:work.level?'condensed':'leaf'})}]}]})){
@@ -54,7 +60,11 @@ export class ArchiveService {
       signal.throwIfAborted();if(!reason)throw Error('摘要模型未正常结束');text=checkedSummary(text,{finishReason:reason})
       this.db.saveNode(id,work,text,owner,doc.revision,()=>readSettings(this.file).revision)
       await new Promise(r=>setImmediate(r))
-    }}catch(error){failed=true;throw error}finally{clearInterval(heartbeat);this.controllers.delete(controller);this.db.release(id,owner,failed)}
+    }}catch(error){
+      if(controller.signal.aborted&&(this.stopped||readSettings(this.file).revision!==doc.revision))return 'cancelled'
+      failed=true;throw error
+    }finally{clearInterval(heartbeat);this.controllers.delete(controller);this.db.release(id,owner,failed)}
+    return 'complete'
   }
   sessions(input){
     const value=this.db.sessions(input)

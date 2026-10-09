@@ -39,7 +39,50 @@ test('paid archive summaries stop on disable and late model output is discarded'
   writeFileSync(file,JSON.stringify(settingsDocument({...doc.settings,summaryEnabled:false},'two')));archive.changed();finish('Late summary facts');await archive.drain()
   assert.equal(calls.length,1);assert.equal(archive.db.nodes(session.id).length,0)
   assert.ok(archive.db.events(session.id).items.length)
+  assert.equal(archive.lastError,undefined)
  },true,async()=>{started();return answer})
+})
+
+test('a failed archive shows a safe cause and clears only after that session recovers',async()=>{
+ await fixture(async({session,archive,append})=>{
+  append('Original facts');await archive.drain()
+  const capture=archive.capture.bind(archive)
+  archive.capture=async()=>{throw Error('会话来源身份改变，原记录保留')}
+  archive.dirty.add(session.id);await archive.drain()
+  assert.equal(archive.lastDiagnostic.stage,'capture');assert.equal(archive.lastDiagnostic.code,'HEADER_IDENTITY')
+  assert.match(archive.lastError,/来源信息冲突/)
+  archive.capture=capture;archive.dirty.add('other-failed-session')
+  archive.failed(Error('原文序号不连续'),'other-failed-session','capture')
+  archive.dirty.delete('other-failed-session');archive.dirty.add(session.id);await archive.drain()
+  assert.equal(archive.lastDiagnostic.session,'other-failed-session')
+  archive.recovered('other-failed-session','capture');assert.equal(archive.lastError,undefined)
+ },false)
+})
+
+test('a failed summary remains visible through the retry cooldown and clears on a completed retry',async()=>{
+ let incomplete=true
+ await fixture(async({session,archive,append,calls})=>{
+  append('Original source facts '.repeat(500));append('Next source facts '.repeat(500))
+  archive.schedule(session.id);await archive.drain()
+  assert.equal(archive.lastDiagnostic.stage,'summary');assert.equal(archive.lastDiagnostic.code,'SUMMARY_TOO_LONG')
+  const count=calls.length;archive.schedule(session.id);await archive.drain()
+  assert.equal(calls.length,count);assert.ok(archive.lastError)
+  incomplete=false;archive.db.db.prepare('UPDATE sl_jobs SET retry=0 WHERE session=?').run(session.id)
+  archive.schedule(session.id);await archive.drain();assert.equal(archive.lastError,undefined)
+ },true,async()=>incomplete?'source facts '.repeat(1000):'Complete source-grounded summary')
+})
+
+test('cancelling a summary retry does not erase an unresolved earlier failure',async()=>{
+ let attempt=0,finish,started;const begun=new Promise(r=>started=r),late=new Promise(r=>finish=r)
+ await fixture(async({session,archive,append,file,doc})=>{
+  append('Original source facts '.repeat(500));append('Next source facts '.repeat(500))
+  archive.schedule(session.id);await archive.drain();assert.equal(archive.lastDiagnostic.code,'SUMMARY_TOO_LONG')
+  archive.db.db.prepare('UPDATE sl_jobs SET retry=0 WHERE session=?').run(session.id)
+  archive.schedule(session.id);await begun
+  writeFileSync(file,JSON.stringify(settingsDocument({...doc.settings,summaryEnabled:false},'two')))
+  archive.changed();finish('A late result');await archive.drain()
+  assert.equal(archive.lastDiagnostic.code,'SUMMARY_TOO_LONG');assert.equal(archive.db.nodes(session.id).length,0)
+ },true,async()=>{if(attempt++===0)return 'source facts '.repeat(1000);started();return late})
 })
 test('history archiving and native mode make no auxiliary model calls when summaries are off',async()=>{
  await fixture(async({session,archive,append,calls})=>{

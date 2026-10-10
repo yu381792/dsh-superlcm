@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.27
+
+- 修复摘要语言跟随真实用户消息，避免工具、注入和旧摘要改变语言。
+- 修复长原文指令带跑摘要，在源内容后重申任务并检查全部节标题和输出语言。
+- API 与 DSH 质量失败最多补试一次，原文与设置保持不变。
+
+
 ## 0.5.26 — 2026-10-09
 
 - Keep historical sequence recovery aligned with the full SuperLcm adapter, including unsupported migrations that wrap a sequence gap.

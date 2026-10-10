@@ -27,7 +27,7 @@ async function fixture(run, response = async () => 'Current task and exact facts
     new SessionStore(ctx); new SessionProjections(ctx)
     ctx.reflect.provide('llm', {async *stream(options) {
       calls.push(options); const text = await response(options)
-      yield {type:'text-delta',index:0,text}
+      yield {type:'text-delta',index:0,text:'# '+text}
     }, resolveModelInfo:async()=>({context:{contextWindow:262144},defaultMaxTokens:65536}), imageRequestPricing() {}, fileRequestText() {}})
     new TokenMeter(ctx)
     const owner = await mountCompactionOwner(ctx,{controlFile:file,archiveHome:dir,...ownerConfig})
@@ -114,7 +114,7 @@ test('off/on/off switches real owners and managed summaries keep their fourth-ar
     publish('takeover',{auto:true,summaryAdapter:adapter})
     await owner.reload();assert.equal(owner.mode,'superlcm');assert.ok(ctx.compaction instanceof Engine)
     const engine=ctx.compaction, directives=[]
-    engine.summaryContext.llm.stream=async function*(options){directives.push(options.messages.at(-1).content[0].text);yield{type:'text-delta',index:0,text:'Historical facts and exact decision.'}}
+    engine.summaryContext.llm.stream=async function*(options){directives.push(options.messages.at(-1).content[0].text);yield{type:'text-delta',index:0,text:'# Historical facts and exact decision.'}}
     const raw=append('earlier facts '.repeat(20000))
     const prepared=prepareAsyncRegion(engine,agent,{start:raw.seq,end:raw.seq})
     prepared.trustedChildNodeIds=['known-child']
@@ -189,4 +189,17 @@ test('malformed controls at boot or reload retain native protection without ackn
     assert.equal(owner.mode,'dsh-native');assert.ok(ctx.compaction instanceof Basic);assert.equal(ctx.compaction.config.retainTokens,24000)
     assert.notEqual(ctx.compaction.compressionReporter?.revision,'invalid-controls')
   }finally{await ctx.fiber.dispose()}
+})
+
+test('DSH takeover retries wrong language once without editing the summarized input',async()=>{
+ await fixture(async({ctx,owner,session,agent,signal,append,publish})=>{
+  publish('takeover',{auto:true,summaryAdapter:adapter});await owner.reload()
+  const engine=ctx.compaction,seen=[]
+  engine.summaryContext.llm.stream=async function*(options){seen.push(options);yield {type:'text-delta',index:0,text:seen.length===1?'# 状态\n当前项目还没有部署，原始文件保持不变。'.repeat(5):'# Current state\nThe original project remains unchanged. Deployment remains unauthorized and verification is pending.'}}
+  const raw=append('Please check the files and preserve the project. We should not deploy the changes yet. '.repeat(300))
+  const prepared=prepareAsyncRegion(engine,agent,{start:raw.seq,end:raw.seq}),before=structuredClone(prepared.input),surface=[...session.surface.nodes]
+  const result=await summarizeAsyncRegion(engine,agent,prepared,signal)
+  assert.equal(seen.length,2);assert.deepEqual(prepared.input,before);assert.deepEqual(session.surface.nodes,surface)
+  assert.match(result.summary[0].text,/Current state/);assert.match(seen[1].messages.at(-1).content[0].text,/previous response failed/)
+ })
 })

@@ -16,7 +16,7 @@ async function fixture(run,enabled=true,respond=async()=> 'Source facts with exa
  const doc=settingsDocument({...defaults,summaryEnabled:enabled,summaryProvider:'local',summaryModel:'summary',chunkTokens:1000},'one');writeFileSync(file,JSON.stringify(doc))
  new SessionStore(ctx);new SessionProjections(ctx)
  ctx.reflect.provide('tools',{register:tool=>tools.push(tool)})
- ctx.reflect.provide('llm',{async *stream(options){calls.push(options);const text=await respond(options);yield {type:'text-delta',index:0,text};yield {type:'finish',reason:{kind:'stop'}}}})
+ ctx.reflect.provide('llm',{async *stream(options){calls.push(options);const text=await respond(options);yield {type:'text-delta',index:0,text:text.startsWith('<fake_tool_call>')?text:'# '+text};yield {type:'finish',reason:{kind:'stop'}}}})
  ctx.reflect.provide('sessionQuery',{observeSession:async id=>{const s=ctx.sessions.get(id);return {source:'live',header:s.header,events:s.snapshotEvents(),[Symbol.dispose](){}}},listSessions:async()=>[]})
  const archive=new ArchiveService(ctx,native,file),session=ctx.sessions.create('standalone-service',{meta:{cwd:'/project'}})
  const append=text=>session.append('user/message',createUserMessage({content:[{type:'text',text}]}),{surfaceOp:'append'})
@@ -101,4 +101,23 @@ test('native committed checkpoints appear at the real summary depth without asse
   native.upsertNode({sessionId:session.id,nodeId:'wrapper',summary:[...a,...b],summaryText:'Summary A Summary B',childIds:['a','b'],sourceSeqs:seqs,status:'ready',kind:'assembled'})
   const outline=archive.outline(session.id);assert.equal(outline.nodes.length,2);assert.ok(outline.nodes.every(n=>n.level===0));assert.equal(outline.uncovered,0);assert.equal(archive.sessions().items[0].summaryCount,2)
  },false)
+})
+
+test('archive retries a wrong language once, saves only the valid summary and keeps surface intact',async()=>{
+ let attempt=0
+ await fixture(async({session,archive,append,calls})=>{
+  append('Please check the original project and keep the files. We should not deploy yet. '.repeat(500));append('Please preserve the files. '.repeat(500))
+  await archive.drain();const surface=[...session.surface.nodes];await archive.capture(session.id)
+  assert.equal(await archive.summarize(session.id),'complete')
+  const nodes=archive.db.nodes(session.id);assert.ok(nodes.length);assert.equal(calls.length,nodes.length+1)
+  assert.ok(nodes.every(n=>n.summary.startsWith('# Current state')))
+  assert.deepEqual(session.surface.nodes,surface)
+ },true,async()=>attempt++===0?'当前项目还没有部署，原始文件保持不变。'.repeat(5):'Current state\nThe original project remains unchanged. Deployment has not been authorized and testing is pending.')
+})
+test('a repeated role-play reply is refused after one retry and no summary is saved',async()=>{
+ await fixture(async({session,archive,append,calls})=>{
+  append('Please check the current project and keep all original files. '.repeat(500));append('Please preserve the files. '.repeat(500));await archive.drain();await archive.capture(session.id)
+  await assert.rejects(archive.summarize(session.id),/section heading/)
+  assert.equal(calls.length,2);assert.equal(archive.db.nodes(session.id).length,0)
+ },true,async()=>'<fake_tool_call>Do the work now.</fake_tool_call>')
 })

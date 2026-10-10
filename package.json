@@ -1,7 +1,7 @@
 {
   "name": "SuperLcm",
-  "version": "0.5.26",
-  "description": "为 DSH 保存完整原文、生成后台分层摘要并精确召回。摘要和可选压缩均在插件设置页管理。",
+  "version": "0.5.27",
+  "description": "\u4e3a DSH \u4fdd\u5b58\u5b8c\u6574\u539f\u6587\u3001\u751f\u6210\u540e\u53f0\u5206\u5c42\u6458\u8981\u5e76\u7cbe\u786e\u53ec\u56de\u3002\u6458\u8981\u548c\u53ef\u9009\u538b\u7f29\u5747\u5728\u63d2\u4ef6\u8bbe\u7f6e\u9875\u7ba1\u7406\u3002",
   "type": "module",
   "main": "./src/runtime.js",
   "exports": {

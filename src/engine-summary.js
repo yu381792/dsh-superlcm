@@ -1,15 +1,18 @@
+import {summaryRangeNotice} from './summary-language.js'
+import {dshSummaryLanguage} from './dsh-summary-language.js'
 import { randomUUID } from 'node:crypto'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { cleanRoute, routeIsConfigured } from './engine-config.js'
 import { appendRecallEnvelope } from './marker.js'
 import { nativeSummaryTask } from './summary-task.js'
 import { summaryCallContext } from './summary-session.js'
-import { SUMMARY_SYSTEM, RECALL_POLICY, summaryInstructions, checkedSummary } from '../src/summary-policy.js'
+import { SUMMARY_SYSTEM, RECALL_POLICY, summaryInstructions, summaryClosing, checkedSummary } from '../src/summary-policy.js'
 export async function summarizeWithRecall(engine,args) {
     const lease=engine.acquireSummary?.()
     try {
     await (lease?.ready||engine.summaryModelReady)
     const metadata = args[3] ?? nativeSummaryTask(engine,args[0],args[1])
+    const task={...metadata?.summaryTask,language:dshSummaryLanguage(args[1].session,metadata?.summaryTask),requireHeading:true,maxChars:null}
     const children = Array.isArray(metadata?.trustedChildNodeIds)
       ? [...new Set(metadata.trustedChildNodeIds)]
       : []
@@ -21,6 +24,7 @@ export async function summarizeWithRecall(engine,args) {
     })
     const fallbackRoute = cleanRoute(lease?.fallback||engine.fallbackSummarizationRoute)
 
+    let qualityRetried=false
     const attempt = async (route) => {
       if (route) engine.summaryGuards.assertRoute(route)
       const receiver = route === null ? Object.create(engine) : Object.assign(Object.create(engine), {
@@ -41,14 +45,22 @@ export async function summarizeWithRecall(engine,args) {
       const modelContext=lease?.ctx||engine.summaryContext
       const ctx = modelContext && route?.provider === primaryRoute.provider ? modelContext : engine.ctx
       const input = summarizeArgs[0]
-      const directive = SUMMARY_SYSTEM + '\n\n' + summaryInstructions({...metadata?.summaryTask,maxChars:null})
-      Object.defineProperty(receiver, 'ctx', { value: summaryCallContext(ctx, summarizeArgs[1].session.id, route, { input, directive }) })
+      const directive = SUMMARY_SYSTEM + '\n\n' + summaryInstructions(task)+'\n'+summaryClosing(task,'all preceding conversation messages')
       try {
-        result = await BasicCompactionEngine.prototype.summarize.call(receiver, ...summarizeArgs)
-        if (result === null || typeof result !== 'object' || !Array.isArray(result.summary)) {
-          throw new TypeError('BasicCompactionEngine.summarize() returned an invalid summary result')
+        for(;;) {
+          Object.defineProperty(receiver, 'ctx', { configurable:true, value: summaryCallContext(ctx, summarizeArgs[1].session.id, route, { input, directive:directive+(qualityRetried?'\nThe previous response failed language or heading validation. Follow the summary task and language; return a factual summary beginning with a heading.':'') }) })
+          result = await BasicCompactionEngine.prototype.summarize.call(receiver, ...summarizeArgs)
+          if (result === null || typeof result !== 'object' || !Array.isArray(result.summary)) {
+            throw new TypeError('BasicCompactionEngine.summarize() returned an invalid summary result')
+          }
+          try {
+            checkedSummary(result.summary.filter(block=>block.type==='text').map(block=>block.text).join('\n'),task)
+            break
+          } catch(error) {
+            if(!error.summaryQuality||qualityRetried||summarizeArgs[2]?.aborted)throw error
+            qualityRetried=true
+          }
         }
-        checkedSummary(result.summary.filter(block=>block.type==='text').map(block=>block.text).join('\n'),{maxChars:null})
         if (route) engine.summaryGuards.succeededRoute(route)
       } catch (error) {
         if (route && !summarizeArgs[2]?.aborted) engine.summaryGuards.failedRoute(route, error, engine.rollingConfig.summaryRetryCooldownMs)
@@ -81,8 +93,9 @@ export async function summarizeWithRecall(engine,args) {
     // returned body as well so its old established-background sentence cannot
     // make this historical snapshot look like a present user instruction.
     const summary = args[3] === undefined
-      ? [{type:'text',text:`Historical snapshot, source records #${metadata.summaryTask.first}–#${metadata.summaryTask.last}. State applies at the end of that range, not the present day. ${RECALL_POLICY}`},...result.summary]
+      ? [...result.summary,{type:'text',text:summaryRangeNotice(task)}]
       : result.summary
+    checkedSummary(summary.filter(b=>b.type==='text').map(b=>b.text).join('\n'),task)
     const nodeId = randomUUID()
     return {
       ...result,

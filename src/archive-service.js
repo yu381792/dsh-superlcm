@@ -60,12 +60,18 @@ export class ArchiveService {
     const heartbeat=setInterval(()=>{try{if(!this.db.renew(id,owner))controller.abort(Error('摘要任务已失去归属'));if(readSettings(this.file).revision!==doc.revision)controller.abort(Error('摘要设置已变化'))}catch{controller.abort(Error('摘要设置不可用'))}},10000);heartbeat.unref()
     try{for(let work;(work=archiveWork(this.db,id,doc.settings));){controller.signal.throwIfAborted();if(readSettings(this.file).revision!==doc.revision)return 'cancelled'
       const timeout=AbortSignal.timeout(180000),signal=AbortSignal.any([controller.signal,timeout]),route={provider:doc.settings.summaryProvider,model:doc.settings.summaryModel}
-      let text='',reason=null
-      for await(const chunk of this.ctx.llm.stream({...route,sessionId:summarySessionId(id,route),purpose:'compaction',maxTokens:2048,signal,messages:[{role:'system',content:[{type:'text',text:SUMMARY_SYSTEM}]},{role:'user',content:[{type:'text',text:buildSummaryPrompt(work.content,{...work,kind:work.level?'condensed':'leaf'})}]}]})){
-        signal.throwIfAborted();if(chunk.type==='text-delta')text+=chunk.text
-        if(chunk.type==='finish'){reason=chunk.reason;if(['error','aborted'].includes(reason?.kind))throw Error('摘要模型失败')}
+      let text
+      for(let attempt=0;attempt<2;attempt++) {
+        let draft='',reason=null
+        const task={...work,kind:work.level?'condensed':'leaf'}
+        const prompt=buildSummaryPrompt(work.content,task)+(attempt?'\nThe previous reply failed the summary language or heading check. Follow the required language and heading; summarize only.':'')
+        for await(const chunk of this.ctx.llm.stream({...route,sessionId:summarySessionId(id,route),purpose:'compaction',maxTokens:2048,signal,messages:[{role:'system',content:[{type:'text',text:SUMMARY_SYSTEM}]},{role:'user',content:[{type:'text',text:prompt}]}]})){
+          signal.throwIfAborted();if(chunk.type==='text-delta')draft+=chunk.text
+          if(chunk.type==='finish'){reason=chunk.reason;if(['error','aborted'].includes(reason?.kind))throw Error('摘要模型失败')}
+        }
+        signal.throwIfAborted();if(!reason)throw Error('摘要模型未正常结束')
+        try{text=checkedSummary(draft,{...work,finishReason:reason});break}catch(error){if(!error.summaryQuality||attempt)throw error}
       }
-      signal.throwIfAborted();if(!reason)throw Error('摘要模型未正常结束');text=checkedSummary(text,{finishReason:reason})
       this.db.saveNode(id,work,text,owner,doc.revision,()=>readSettings(this.file).revision)
       await new Promise(r=>setImmediate(r))
     }}catch(error){

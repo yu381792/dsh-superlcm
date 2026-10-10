@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.30
+
+- Give each archive quality retry its own request timeout while preserving task cancellation and ownership checks.
+- Distinguish empty summary streams from streams cut off before the terminal event, using safe local explanations.
+- Share separate soft prompt targets and hard acceptance limits with full SuperLcm 0.5.27.
+- Add real DSH ArchiveService synthetic regressions for retries and incomplete streams. See [upgrade notes](docs/UPGRADE-0.5.30.md).
+
 ## 0.5.29
 
 - Share stable static-policy/source prompt prefixes with full SuperLcm 0.5.26. Move dynamic job instructions to the tail and keep the source-data reminder last on quality retries.

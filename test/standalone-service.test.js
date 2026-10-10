@@ -122,6 +122,28 @@ test('a repeated role-play reply is refused after one retry and no summary is sa
  },true,async()=>'<fake_tool_call>Do the work now.</fake_tool_call>')
 })
 
+test('summary language retries own independent request timeouts and preserve source prefix',async()=>{
+ let attempt=0
+ await fixture(async({session,archive,append,calls})=>{
+  append('Please preserve the original project and do not deploy. '.repeat(500));append('Keep all original files unchanged. '.repeat(500));await archive.drain();await archive.capture(session.id)
+  const original=archive.db.events(session.id),surface=[...session.surface.nodes]
+  assert.equal(await archive.summarize(session.id),'complete');assert.ok(calls.length>=2)
+  assert.notEqual(calls[0].signal,calls[1].signal)
+  const end='</conversation_excerpt>',first=calls[0].messages.at(-1).content[0].text,second=calls[1].messages.at(-1).content[0].text
+  assert.equal(first.slice(0,first.indexOf(end)+end.length),second.slice(0,second.indexOf(end)+end.length))
+  assert.deepEqual(archive.db.events(session.id),original);assert.deepEqual(session.surface.nodes,surface)
+ },true,async()=>attempt++===0?'当前项目未部署，原文保持不变。'.repeat(5):'Current state\nOriginal files are unchanged. Deployment remains unauthorized.')
+})
+for(const kind of ['stream_empty','stream_cutoff'])test('archive records the distinct '+kind+' failure safely',async()=>{
+ const chunks=kind==='stream_empty'?[]:[{type:'text-delta',index:0,text:'# Current state\nSynthetic original preserved.'}]
+ await fixture(async({session,archive,append,calls})=>{
+  append('Please keep the original project unchanged. '.repeat(500));append('Do not deploy yet. '.repeat(500));await archive.drain();await archive.capture(session.id)
+  const before=archive.db.events(session.id)
+  await assert.rejects(archive.summarize(session.id),e=>e.summaryKind===kind)
+  assert.equal(calls.length,1);assert.equal(archive.db.nodes(session.id).length,0);assert.deepEqual(archive.db.events(session.id),before)
+ },true,async()=>chunks)
+})
+
 for(const kind of ['missing','unknown','max-tokens','tool-calls','error','aborted','duplicate','after-finish','tool-start','tool-output']){
  test(`archive rejects ${kind} completion without saving a partial summary or retrying`,async()=>{
   const body={type:'text-delta',index:0,text:'# Current state\nThe original files remain unchanged. Deployment has not been authorized.'},stop={type:'finish',reason:{kind:'stop'}}

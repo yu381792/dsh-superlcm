@@ -28,7 +28,7 @@ const retryInstruction = note => {
   return note ? `\nRetry note: ${note}` : ''
 }
 
-export function summaryTaskTail({ level = 0, kind = level ? 'condensed' : 'leaf', first, last, targetTokens = 1200, maxChars = SUMMARY_MAX_CHARS, language, retryNote = '' } = {}) {
+export function summaryTaskTail({ level = 0, kind = level ? 'condensed' : 'leaf', first, last, targetTokens = 1200, maxChars = SUMMARY_MAX_CHARS, requestChars, language, retryNote = '' } = {}) {
   if (!Number.isSafeInteger(level) || level < 0) throw new Error('Invalid summary depth')
   const depthPolicy = level === 0
     ? 'Summarize this source segment, not the whole conversation. Keep essential technical details, decisions with rationale, exceptions and current unfinished state at the END OF THIS SEGMENT.'
@@ -41,7 +41,7 @@ export function summaryTaskTail({ level = 0, kind = level ? 'condensed' : 'leaf'
   return [
     `SuperLcm summary policy ${SUMMARY_POLICY_VERSION}; kind=${kind}; semantic depth=${level}.`, range, depthPolicy,
     languageRule(language),
-    `Aim for at most ${Math.max(256, Math.floor(targetTokens))} tokens${maxChars === null ? '' : ` and no more than ${maxChars} characters`}.`,
+    `Aim for at most ${Math.max(256, Math.floor(targetTokens))} tokens${(requestChars ?? maxChars) === null ? '' : ` and no more than ${requestChars ?? maxChars} characters`}.`,
   ].join('\n') + retryInstruction(retryNote)
 }
 

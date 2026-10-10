@@ -9,7 +9,7 @@ export function summarySessionId(sessionId, route) {
 // DSH's BlockAssembler defaults to stop even if the wire closes without finish.
 // Require the actual terminal event before any summary may replace or be stored.
 export async function* completeSummaryStream(stream, signal) {
-  let finished = false
+  let finished = false,received=false
   for await (const chunk of stream) {
     signal?.throwIfAborted()
     if (finished || chunk.type === 'tool-call-delta' || chunk.blockType === 'tool-call' || chunk.block?.type === 'tool-call') {
@@ -19,10 +19,11 @@ export async function* completeSummaryStream(stream, signal) {
       if (chunk.reason?.kind !== 'stop') throw new Error('Summary generation was incomplete; original content retained')
       finished = true
     }
+    if(chunk.type==='text-delta'&&chunk.text)received=true
     yield chunk
   }
   signal?.throwIfAborted()
-  if (!finished) throw new Error('Summary generation was incomplete; missing terminal finish, original content retained')
+  if (!finished) throw Object.assign(new Error(received?'Summary generation was incomplete; stream cut off before its final event, original content retained':'Summary generation was incomplete; no completion data, original content retained'),{summaryKind:received?'stream_cutoff':'stream_empty'})
 }
 
 // Only the auxiliary wire identity changes. Original Session methods, content,

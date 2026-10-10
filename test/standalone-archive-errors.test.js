@@ -40,4 +40,8 @@ test('background diagnostics distinguish causes without disclosing raw errors',(
   assert.equal(archiveDiagnostic(legacy).code,'LEGACY_FORMAT')
   assert.doesNotMatch(JSON.stringify(archiveDiagnostic(legacy)),/private source content/)
   assert.equal(archiveDiagnostic(Object.assign(Error('incomplete private provider body'),{status:401}),{stage:'summary'}).code,'HTTP_401')
+  for(const [kind,code] of [['stream_empty','SUMMARY_STREAM_EMPTY'],['stream_cutoff','SUMMARY_STREAM_CUTOFF']]){
+   const value=archiveDiagnostic(Object.assign(Error('SECRET SOURCE'),{summaryKind:kind}),{stage:'summary'})
+   assert.equal(value.code,code);assert.doesNotMatch(value.message,/SECRET/)
+  }
 })

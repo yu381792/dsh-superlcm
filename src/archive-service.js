@@ -59,9 +59,12 @@ export class ArchiveService {
     const controller=new AbortController();this.controllers.add(controller);let failed=false
     const heartbeat=setInterval(()=>{try{if(!this.db.renew(id,owner))controller.abort(Error('摘要任务已失去归属'));if(readSettings(this.file).revision!==doc.revision)controller.abort(Error('摘要设置已变化'))}catch{controller.abort(Error('摘要设置不可用'))}},10000);heartbeat.unref()
     try{for(let work;(work=archiveWork(this.db,id,doc.settings));){controller.signal.throwIfAborted();if(readSettings(this.file).revision!==doc.revision)return 'cancelled'
-      const timeout=AbortSignal.timeout(180000),signal=AbortSignal.any([controller.signal,timeout]),route={provider:doc.settings.summaryProvider,model:doc.settings.summaryModel}
+      const route={provider:doc.settings.summaryProvider,model:doc.settings.summaryModel}
       let text
       for(let attempt=0;attempt<2;attempt++) {
+        // Each model request owns a fresh timeout; settings cancellation and
+        // lease loss still bound the whole task through the outer controller.
+        const signal=AbortSignal.any([controller.signal,AbortSignal.timeout(180000)])
         let draft='',reason=null
         const task={...work,kind:work.level?'condensed':'leaf'}
         const parts=summaryPromptParts(work.content,task),prompt=joinSummaryPrompt(attempt?withSummaryRetry(parts,'The previous reply failed the summary language or heading check. Follow the required language and heading; summarize only.'):parts)

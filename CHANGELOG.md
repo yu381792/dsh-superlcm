@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.29
+
+- Share stable static-policy/source prompt prefixes with full SuperLcm 0.5.26. Move dynamic job instructions to the tail and keep the source-data reminder last on quality retries.
+- Preserve language validation, complete model endings, exact originals and current settings. Invalidate uncommitted old-policy drafts.
+- Add 12 synthetic prefix/retry regressions; Mac release verification and official isolated installation/update pass. Credit muxammadreza for the shared caching report.
+
 ## 0.5.28
 
 - Require a real successful finish event before storing an archive summary or replacing the DSH context. Missing/unknown/truncated/aborted/duplicate endings, tool output and post-finish output are rejected without paid quality retries.

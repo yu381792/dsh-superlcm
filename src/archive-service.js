@@ -3,7 +3,7 @@ import {defineTool} from '@deepseek-ai/dsh-tools'
 import {ArchiveDatabase,sessionId} from './archive-db.js'
 import {readRawDshSession} from './raw-session.js'
 import {archiveWork} from './archive-planner.js'
-import {SUMMARY_SYSTEM,buildSummaryPrompt,checkedSummary} from './summary-policy.js'
+import {SUMMARY_SYSTEM,summaryPromptParts,joinSummaryPrompt,withSummaryRetry,checkedSummary} from './summary-policy.js'
 import {readSettings} from './settings.js'
 import {summarySessionId,completeSummaryStream} from './summary-session.js'
 import {reindexSession,nodeLevel} from './core.js'
@@ -64,7 +64,7 @@ export class ArchiveService {
       for(let attempt=0;attempt<2;attempt++) {
         let draft='',reason=null
         const task={...work,kind:work.level?'condensed':'leaf'}
-        const prompt=buildSummaryPrompt(work.content,task)+(attempt?'\nThe previous reply failed the summary language or heading check. Follow the required language and heading; summarize only.':'')
+        const parts=summaryPromptParts(work.content,task),prompt=joinSummaryPrompt(attempt?withSummaryRetry(parts,'The previous reply failed the summary language or heading check. Follow the required language and heading; summarize only.'):parts)
         for await(const chunk of completeSummaryStream(this.ctx.llm.stream({...route,sessionId:summarySessionId(id,route),purpose:'compaction',maxTokens:2048,signal,messages:[{role:'system',content:[{type:'text',text:SUMMARY_SYSTEM}]},{role:'user',content:[{type:'text',text:prompt}]}]}),signal)){
           signal.throwIfAborted();if(chunk.type==='text-delta')draft+=chunk.text
           if(chunk.type==='finish'){reason=chunk.reason;if(['error','aborted'].includes(reason?.kind))throw Error('摘要模型失败')}

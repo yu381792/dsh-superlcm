@@ -16,7 +16,7 @@ async function fixture(run,enabled=true,respond=async()=> 'Source facts with exa
  const doc=settingsDocument({...defaults,summaryEnabled:enabled,summaryProvider:'local',summaryModel:'summary',chunkTokens:1000},'one');writeFileSync(file,JSON.stringify(doc))
  new SessionStore(ctx);new SessionProjections(ctx)
  ctx.reflect.provide('tools',{register:tool=>tools.push(tool)})
- ctx.reflect.provide('llm',{async *stream(options){calls.push(options);const text=await respond(options);yield {type:'text-delta',index:0,text:text.startsWith('<fake_tool_call>')?text:'# '+text};yield {type:'finish',reason:{kind:'stop'}}}})
+ ctx.reflect.provide('llm',{async *stream(options){calls.push(options);const text=await respond(options);if(Array.isArray(text)){for(const chunk of text)yield chunk}else{yield {type:'text-delta',index:0,text:text.startsWith('<fake_tool_call>')?text:'# '+text};yield {type:'finish',reason:{kind:'stop'}}}}})
  ctx.reflect.provide('sessionQuery',{observeSession:async id=>{const s=ctx.sessions.get(id);return {source:'live',header:s.header,events:s.snapshotEvents(),[Symbol.dispose](){}}},listSessions:async()=>[]})
  const archive=new ArchiveService(ctx,native,file),session=ctx.sessions.create('standalone-service',{meta:{cwd:'/project'}})
  const append=text=>session.append('user/message',createUserMessage({content:[{type:'text',text}]}),{surfaceOp:'append'})
@@ -121,3 +121,17 @@ test('a repeated role-play reply is refused after one retry and no summary is sa
   assert.equal(calls.length,2);assert.equal(archive.db.nodes(session.id).length,0)
  },true,async()=>'<fake_tool_call>Do the work now.</fake_tool_call>')
 })
+
+for(const kind of ['missing','unknown','max-tokens','tool-calls','error','aborted','duplicate','after-finish','tool-start','tool-output']){
+ test(`archive rejects ${kind} completion without saving a partial summary or retrying`,async()=>{
+  const body={type:'text-delta',index:0,text:'# Current state\nThe original files remain unchanged. Deployment has not been authorized.'},stop={type:'finish',reason:{kind:'stop'}}
+  const chunks=kind==='missing'?[body]:kind==='duplicate'?[body,stop,stop]:kind==='after-finish'?[body,stop,body]:kind==='tool-start'?[body,{type:'block-start',index:1,blockType:'tool-call'},stop]:kind==='tool-output'?[body,{type:'block-end',index:1,block:{type:'tool-call',id:'fake',name:'execute',arguments:'{}'}},stop]:[body,{type:'finish',reason:{kind}}]
+  await fixture(async({session,archive,append,calls})=>{
+   append('Please preserve the original files. Do not deploy yet. '.repeat(500));append('Please keep all files unchanged. '.repeat(500));await archive.drain();await archive.capture(session.id)
+   const before=archive.db.events(session.id),surface=[...session.surface.nodes]
+   await assert.rejects(archive.summarize(session.id),/incomplete/)
+   assert.equal(calls.length,1);assert.equal(archive.db.nodes(session.id).length,0)
+   assert.deepEqual(archive.db.events(session.id),before);assert.deepEqual(session.surface.nodes,surface)
+  },true,async()=>chunks)
+ })
+}

@@ -58,7 +58,7 @@ test('real DSH nested assistant calls and tool results close a complete source g
  db.capture({id:'one'},[
   event(0,'assistant/message',{message:{content:[{type:'tool-call',id:'real',name:'read',arguments:'{}'}]}}),
   event(1,'tool/call',{callId:'real',name:'read',arguments:'{}'}),
-  event(2,'tool/result',{message:{callId:'real',content:[{type:'text',text:'x'.repeat(10000)}]}}),
+  event(2,'tool/result',{message:{toolCallId:'real',content:[{type:'text',text:'x'.repeat(10000)}]}}),
   event(3),event(4)])
  const work=archiveWork(db,'one',{chunkTokens:1000,fanout:4});assert.ok(work);assert.deepEqual(work.sources.slice(0,3),[0,1,2])
 })

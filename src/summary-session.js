@@ -6,6 +6,25 @@ export function summarySessionId(sessionId, route) {
     .digest('hex').slice(0, 32)
 }
 
+// DSH's BlockAssembler defaults to stop even if the wire closes without finish.
+// Require the actual terminal event before any summary may replace or be stored.
+export async function* completeSummaryStream(stream, signal) {
+  let finished = false
+  for await (const chunk of stream) {
+    signal?.throwIfAborted()
+    if (finished || chunk.type === 'tool-call-delta' || chunk.blockType === 'tool-call' || chunk.block?.type === 'tool-call') {
+      throw new Error('Summary generation was incomplete; unexpected summary stream output, original content retained')
+    }
+    if (chunk.type === 'finish') {
+      if (chunk.reason?.kind !== 'stop') throw new Error('Summary generation was incomplete; original content retained')
+      finished = true
+    }
+    yield chunk
+  }
+  signal?.throwIfAborted()
+  if (!finished) throw new Error('Summary generation was incomplete; missing terminal finish, original content retained')
+}
+
 // Only the auxiliary wire identity changes. Original Session methods, content,
 // events, and recall ownership stay on the real conversation.
 export function summaryCallContext(ctx, sessionId, route, { input, directive } = {}) {
@@ -24,10 +43,7 @@ export function summaryCallContext(ctx, sessionId, route, { input, directive } =
       }
       messages = [...input.messages, { role:'user', content:[{type:'text',text:directive}] }]
     }
-    for await (const chunk of llm.stream({ ...options, messages, sessionId:summarySessionId(sessionId,route) })) {
-      if (chunk.type === 'finish' && ['max-tokens','tool-calls'].includes(chunk.reason?.kind)) {
-        throw new Error('Summary generation was incomplete; original content retained')
-      }
+    for await (const chunk of completeSummaryStream(llm.stream({ ...options, messages, sessionId:summarySessionId(sessionId,route) }), options.signal)) {
       yield chunk
     }
   } })

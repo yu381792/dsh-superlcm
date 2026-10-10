@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.28
+
+- Require a real successful finish event before storing an archive summary or replacing the DSH context. Missing/unknown/truncated/aborted/duplicate endings, tool output and post-finish output are rejected without paid quality retries.
+- Invalidate uncommitted old-policy drafts while preserving exact originals and committed history.
+- Recognize the host's nested `message.toolCallId` so a completed tool group does not stall all subsequent summaries.
+- Add `npm run verify:release`: regressions, real isolated installation/update and npm packing/import coverage. Shared core changes are checked against full SuperLcm before dual releases.
+
+
 ## 0.5.27
 
 - 修复摘要语言跟随真实用户消息，避免工具、注入和旧摘要改变语言。

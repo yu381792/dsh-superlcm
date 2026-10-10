@@ -1,7 +1,7 @@
 import { languageRule, checkSummaryLanguage } from './summary-language.js'
 // Shared semantic policy for archive-only writers and compaction checkpoints.
 // Depth changes detail, never the authority or validity of recorded decisions.
-export const SUMMARY_POLICY_VERSION = 'temporal-v2-language'
+export const SUMMARY_POLICY_VERSION = 'temporal-v3-complete-stream'
 export const SUMMARY_MAX_CHARS = 6000
 // Backward-compatible minimum, not a fixed generation cap. Source-language
 // density and observed reasoning headroom determine each API request budget.

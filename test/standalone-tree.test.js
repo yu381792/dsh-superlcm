@@ -27,6 +27,7 @@ async function withHost(config, response, run) {
         inputTokens:Math.ceil(JSON.stringify(options.messages).length/4) })
       const text = await response(options)
       yield { type: 'text-delta', index: 0, text:'# '+text }
+      yield { type:'finish', reason:{kind:'stop'} }
     }
     ctx.reflect.provide('llm', {
       stream:options=>ctx.waterfall('llm/stream',options,()=>localStream(options)),

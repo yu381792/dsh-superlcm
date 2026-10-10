@@ -12,7 +12,7 @@ function calls(event,pending) {
     for(const call of data.toolCalls||[])if(call.id)pending.add(call.id)
   }
   if(event.type==='tool/call'){const id=data.callId||data.id;if(id)pending.add(id)}
-  if(event.type==='tool/result')pending.delete(data.message?.callId||data.callId||data.toolCallId||data.id)
+  if(event.type==='tool/result')pending.delete(data.message?.toolCallId||data.message?.callId||data.callId||data.toolCallId||data.id)
 }
 export function archiveWork(db,session,{chunkTokens,fanout}) {
   const fallback=()=>db.db.prepare("SELECT event FROM sl_events WHERE session=? AND json_extract(event,'$.type')='user/message' AND (json_extract(event,'$.data.source') IS NULL OR json_extract(event,'$.data.source.kind')='user') ORDER BY seq DESC LIMIT 128").all(session).reverse().map(r=>userTextFromRecord(r.event)).filter(Boolean)

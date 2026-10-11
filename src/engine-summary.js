@@ -6,11 +6,12 @@ import { cleanRoute, routeIsConfigured } from './engine-config.js'
 import { appendRecallEnvelope } from './marker.js'
 import { nativeSummaryTask } from './summary-task.js'
 import { summaryCallContext } from './summary-session.js'
+import {summaryAttempt} from './summary-attempt.js'
 import { SUMMARY_SYSTEM, RECALL_POLICY, summaryInstructions, summaryClosing, checkedSummary } from '../src/summary-policy.js'
 export async function summarizeWithRecall(engine,args) {
-    const lease=engine.acquireSummary?.()
+    const lease=args[3]?.conversationRoute ? undefined : engine.acquireSummary?.()
     try {
-    await (lease?.ready||engine.summaryModelReady)
+    if(!args[3]?.conversationRoute)await summaryAttempt(() => lease?.ready||engine.summaryModelReady,args[2],engine.rollingConfig.summaryTimeoutMs)
     const metadata = args[3] ?? nativeSummaryTask(engine,args[0],args[1])
     const task={...metadata?.summaryTask,language:dshSummaryLanguage(args[1].session,metadata?.summaryTask),requireHeading:true,maxChars:null}
     const children = Array.isArray(metadata?.trustedChildNodeIds)
@@ -18,11 +19,12 @@ export async function summarizeWithRecall(engine,args) {
       : []
     const summarizeArgs = args.slice(0, 3)
     const config=lease?.config||engine.config
-    const primaryRoute = cleanRoute({
+    const finalConversationRoute = metadata?.conversationRoute
+    const primaryRoute = cleanRoute(finalConversationRoute ?? {
       provider: config?.summarizationProvider,
       model: config?.summarizationModel,
     })
-    const fallbackRoute = cleanRoute(lease?.fallback||engine.fallbackSummarizationRoute)
+    const fallbackRoute = cleanRoute(finalConversationRoute ? {} : lease?.fallback||engine.fallbackSummarizationRoute)
 
     let qualityRetried=false
     const attempt = async (route) => {
@@ -43,13 +45,13 @@ export async function summarizeWithRecall(engine,args) {
       })
       let result
       const modelContext=lease?.ctx||engine.summaryContext
-      const ctx = modelContext && route?.provider === primaryRoute.provider ? modelContext : engine.ctx
+      const ctx = !finalConversationRoute && modelContext && route?.provider === primaryRoute.provider ? modelContext : engine.ctx
       const input = summarizeArgs[0]
       const directive = SUMMARY_SYSTEM + '\n\n' + summaryInstructions(task)+'\n'+summaryClosing(task,'all preceding conversation messages')
       try {
         for(;;) {
           Object.defineProperty(receiver, 'ctx', { configurable:true, value: summaryCallContext(ctx, summarizeArgs[1].session.id, route, { input, directive:directive+(qualityRetried?'\nThe previous response failed language or heading validation. Follow the summary task and language; return a factual summary beginning with a heading.':'') }) })
-          result = await BasicCompactionEngine.prototype.summarize.call(receiver, ...summarizeArgs)
+          result = await summaryAttempt(signal => BasicCompactionEngine.prototype.summarize.call(receiver, summarizeArgs[0], summarizeArgs[1], signal),summarizeArgs[2],engine.rollingConfig.summaryTimeoutMs)
           if (result === null || typeof result !== 'object' || !Array.isArray(result.summary)) {
             throw new TypeError('BasicCompactionEngine.summarize() returned an invalid summary result')
           }
@@ -57,7 +59,7 @@ export async function summarizeWithRecall(engine,args) {
             checkedSummary(result.summary.filter(block=>block.type==='text').map(block=>block.text).join('\n'),task)
             break
           } catch(error) {
-            if(!error.summaryQuality||qualityRetried||summarizeArgs[2]?.aborted)throw error
+            if(finalConversationRoute||!error.summaryQuality||qualityRetried||summarizeArgs[2]?.aborted)throw error
             qualityRetried=true
           }
         }

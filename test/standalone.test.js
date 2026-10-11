@@ -80,3 +80,11 @@ test('re-importing old archives keeps the actual event time instead of making th
  const {db}=fixture(t);db.capture({id:'old',createdAt:1},[{seq:0,type:'user/message',time:10,data:{content:'old'}}]);db.capture({id:'new',createdAt:20},[{seq:0,type:'user/message',time:30,data:{content:'new'}}]);db.capture({id:'old',createdAt:1},[])
  assert.equal(db.sessions().items[0].id,'new');assert.equal(db.sessions().items[1].updatedAt,10)
 })
+
+test('unrelated settings saves preserve a configured backup route',t=>{
+ const {dir}=fixture(t),file=join(dir,'settings.json'),doc=settingsDocument(defaults,'existing')
+ doc.config.fallbackSummarizationProvider='backup';doc.config.fallbackSummarizationModel='fallback'
+ writeFileSync(file,JSON.stringify(doc))
+ const saved=saveSettings({revision:doc.revision,settings:{...doc.settings,chunkTokens:40000}},[],file)
+ assert.equal(saved.config.fallbackSummarizationProvider,'backup');assert.equal(saved.config.fallbackSummarizationModel,'fallback')
+})

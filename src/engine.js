@@ -17,6 +17,9 @@ import { SessionFoldRegistry, SummaryGuards } from './summary-guards.js'
 import { SuperLcmStore, resolveConfiguredDatabasePath } from './store.js'
 import { summaryContext } from './summary-model.js'
 import { summarizeWithRecall } from './engine-summary.js'
+import {abortable} from './summary-attempt.js'
+import {bindBackgroundCancellation} from './background-cancellation.js'
+import {rescueWithConversation} from './conversation-rescue.js'
 import { readControls, controlsConfig } from './controls-config.js'
 import { watchControls } from './controls-runtime.js'
 import {
@@ -25,6 +28,7 @@ import {
   prepareAsyncRegion,
   summarizeAsyncRegion,
   minimumCheckpointTokens,
+  recoverInterruptedCommit,
 } from './async-region.js'
 
 import { DEPRECATED_CONFIG_KEYS, FALLBACK_CONFIG_KEYS, ROLLING_CONFIG_KEYS, ROLLING_DEFAULTS, positiveInteger, nonNegativeInteger, normalizeRolling, cleanRouteValue, cleanRoute, routeIsComplete, routeIsConfigured, routesEqual, SETTINGS_NAMESPACE, SUMMARIZATION_ROUTE_SCHEMA, SETTINGS_SCHEMA, unwrapVolatile, unwrapConfig, splitConfig, systemPrefixEndIndex, isFrozenCheckpoint, firstFoldableSurfaceIndex, reportIndexFailure } from './engine-config.js'
@@ -192,15 +196,15 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     const result = commitAsyncRegion(this, agent, summarized)
     return result === null ? null : { ...result, rollingPolicy: summarized }
   }
-
   summaryRouteFingerprint() { return JSON.stringify([SUMMARY_POLICY_VERSION,this.config.summarizationProvider, this.config.summarizationModel, this.fallbackSummarizationRoute]) }
 
+  bindBackgroundCancellation(agent, signal) { bindBackgroundCancellation(this,agent,signal) }
+  rescueWithConversation(agent,signal) { return rescueWithConversation(this,agent,signal) }
   canPrepareBackground(agent) {
     if(this.controlFile&&!this.config.auto)return false
     const state = this.backgroundFolds.get(agent)
     return (!state || state.status === 'ready') && this.backgroundRouteConfigured() && this.summaryGuards.canStart(agent, this.summaryRouteFingerprint())
   }
-
   startBackgroundFold(agent, selection) {
     const policy = currentPolicy(this, agent)
     if (!policy) return null
@@ -232,21 +236,12 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     this.backgroundFolds.set(agent, state)
     this.backgroundControllers.add(controller)
     this.compressionReporter.report(agent.session.id, 'summarizing', { ...selection, start: parts[0]?.start ?? selection.start })
-    let timer
-    const armTimeout = () => { clearTimeout(timer); timer = setTimeout(() => {
-      state.status = 'cancelling'
-      this.compressionReporter.report(agent.session.id, 'cancelling', selection)
-      controller.abort(new Error('SuperLcm 后台摘要超时'))
-    }, policy.summaryTimeoutMs)
-    timer.unref() }
-    armTimeout()
-    controller.signal.addEventListener('abort', () => clearTimeout(timer), { once: true })
     if (!selection.treeOnly && policy.summaryLeafTargetTokens) prepared.summaryTargetTokens = policy.summaryLeafTargetTokens
-    state.promise = (selection.treeOnly ? Promise.resolve(null) : this.summarizeBackgroundSelection(agent, prepared, controller.signal))
+    state.promise = abortable(selection.treeOnly ? Promise.resolve(null) : this.summarizeBackgroundSelection(agent, prepared, controller.signal),controller.signal)
       .then(async (summarized) => {
         controller.signal.throwIfAborted()
         if (this.backgroundFolds.get(agent) !== state || currentPolicy(this, agent)?.signature !== state.signature) return
-        const built = await buildDraftTree(this, agent, previous, summarized, controller.signal, suffix, armTimeout)
+        const built = await buildDraftTree(this, agent, previous, summarized, controller.signal, suffix)
         controller.signal.throwIfAborted()
         if (this.backgroundFolds.get(agent) !== state || currentPolicy(this, agent)?.signature !== state.signature) return
         state.parts = summarized ? [...parts, summarized] : parts
@@ -274,13 +269,16 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
         const message = error instanceof Error ? error.message : String(error)
         this.ctx.logger?.warn?.(`rolling compaction background summary failed: ${message}; continuing`)
       })
-      .finally(() => { clearTimeout(timer); this.backgroundControllers.delete(controller) })
+      .finally(() => { this.backgroundControllers.delete(controller) })
     return true
   }
-
   tryCommitBackgroundFold(agent, options = {}) {
     const policy = currentPolicy(this, agent)
     if (!policy) return null
+    try {
+      const recovered = recoverInterruptedCommit(this,agent)
+      if (recovered) return recovered
+    } catch { this.ctx.logger?.warn?.('已替换的压缩结束记录暂未写入，保留后续恢复'); return null }
     const pending = this.backgroundFolds.get(agent)
     const activeTokens = options.allowPressure === true || options.force === true ? this.ctx.tokenMeter.measure(agent.session).totalTokens : 0
     const emergency = policy.budgetMode === 'ratio' && activeTokens >= policy.hardActiveTokens
@@ -330,7 +328,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       this.logFoldResult(this.ctx, result)
       return result
     } catch (error) {
-      this.backgroundFolds.delete(agent)
+      if (error instanceof AsyncSurfaceChangedError) this.backgroundFolds.delete(agent)
       this.compressionReporter.report(agent.session.id, error instanceof AsyncSurfaceChangedError ? 'discarded' : 'failed', state.selection)
       const message = error instanceof Error ? error.message : String(error)
       if (error instanceof AsyncSurfaceChangedError) {
@@ -341,12 +339,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       return null
     }
   }
-
   async settleBackgroundFold(agent) {
     let state
     while (['summarizing', 'cancelling'].includes((state = this.backgroundFolds.get(agent))?.status)) await state.promise
   }
-
   logFoldResult(ctx, result) {
     if (result !== null && typeof result === 'object' && Array.isArray(result.shadowedSeqs)) {
       const policy = result.rollingPolicy

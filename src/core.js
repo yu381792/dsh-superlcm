@@ -115,6 +115,25 @@ function committedCompactionRecords(events) {
   return committed
 }
 
+export function unfinishedCompactionStarts(events) {
+  const open = new Map()
+  for (const event of events) {
+    const id = compactionIdOf(event)
+    if (id && event.type === 'compaction/start') open.set(id,event)
+    if (id && event.type === 'compaction/end') open.delete(id)
+  }
+  return [...open.values()]
+}
+
+// Use the same exact checkpoint/source proof as ordinary replay. A missing
+// end is repairable only after a valid replacement was actually persisted.
+export function interruptedCompactionRecords(session) {
+  const events = sessionEvents(session), starts = unfinishedCompactionStarts(events)
+  const ends = starts.map((start,index) => ({type:'compaction/end',seq:session.seq+index,data:start.data}))
+  const ids = new Set(starts.map(start=>start.data.compactionId))
+  return committedCompactionRecords([...events,...ends]).filter(record=>ids.has(record.start.data.compactionId))
+}
+
 function scanHighWater(events, afterSeq) {
   const ordered = events
     .filter(event => Number.isSafeInteger(event?.seq) && event.seq > afterSeq)
@@ -435,6 +454,7 @@ export function doctorSession(store, session) {
   const events = sessionEvents(session)
   const eventSeqs = new Set(events.map(event => event?.seq).filter(Number.isSafeInteger))
   const records = committedCompactionRecords(events)
+  const unfinishedStarts = unfinishedCompactionStarts(events).map(event=>event.seq)
   const identities = legacyIdentities(store, sessionId, records)
   for (const { summary: event } of records) {
     const id = summaryIdentity(sessionId, event, identities)
@@ -463,7 +483,7 @@ export function doctorSession(store, session) {
   const staleInDb = [...storedIds].filter(id => !markerIds.has(id))
   const quickCheck = store.quickCheck()
   return {
-    ok: quickCheck.every(value => value === 'ok')
+    ok: quickCheck.every(value => value === 'ok') && unfinishedStarts.length === 0
       && duplicates.length === 0
       && invalidSources.length === 0
       && missingInDb.length === 0
@@ -477,6 +497,7 @@ export function doctorSession(store, session) {
     storedEdges: stats.edgeCount,
     duplicates,
     invalidSources,
+    unfinishedStarts,
     missingInDb,
     staleInDb,
     missingChildren: stats.missingChildren,

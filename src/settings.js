@@ -42,6 +42,9 @@ export function saveSettings(input,catalog,file=settingsPath()) {
 function saveLocked(input,catalog,file) {
   const current=readSettings(file);if(input?.revision!==current.revision)throw Error('设置已变化，请重新读取')
   const next=settingsDocument(input.settings)
+  // Existing explicitly configured backup survives an unrelated console save.
+  // Never silently choose a backup or replace the conversation's model.
+  next.config=controlsConfig({...next.config,...Object.fromEntries(['fallbackSummarizationProvider','fallbackSummarizationModel'].filter(key=>current.config?.[key]!==undefined).map(key=>[key,current.config[key]]))})
   for(const [enabled,provider,model] of [[next.settings.summaryEnabled,next.settings.summaryProvider,next.settings.summaryModel],[next.settings.takeover,next.settings.compactionProvider,next.settings.compactionModel]]){
     if(enabled&&!catalog.some(p=>p.id===provider&&p.models.some(m=>m.id===model)))throw Error('所选模型当前不可用，请重新选择')
   }

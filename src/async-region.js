@@ -9,7 +9,7 @@ import {
 } from '@deepseek-ai/dsh-compaction'
 import { createUserMessage, errorChain } from '@deepseek-ai/dsh-llm'
 import { markerFromSummary, appendRecallEnvelope } from './marker.js'
-import { nodeLevel } from './core.js'
+import { nodeLevel, interruptedCompactionRecords } from './core.js'
 import { checkpointChild } from './summary-task.js'
 import { CHECKPOINT_PREAMBLE } from './checkpoint-frame.js'
 
@@ -115,6 +115,23 @@ function compactionBusy(session) {
     && !(state.latestEndSeedSeq !== undefined && state.latestEndSeedSeq > state.unmatchedCompactionStart.seq)
 }
 
+export function recoverInterruptedCommit(engine, agent) {
+  const session = agent.session
+  const entry=inspectCompactionEntryState(session)
+  if(!entry.unmatchedCompactionStart)return null
+  const record = interruptedCompactionRecords(session).find(record=>record.start.seq===entry.unmatchedCompactionStart.seq&&markerFromSummary(record.summary.data.summary))
+  if (!record) return null
+  // Finish only this proven replacement. Do not buy another summary or
+  // replace its already-shadowed range a second time, including after reboot.
+  const end = session.append('compaction/end',record.start.data)
+  engine.superLcmStore.finishDraft(session.id,'committed')
+  const staged = engine.backgroundFolds.get(agent)
+  if (staged?.summarized?.compactionId === record.start.data.compactionId) engine.backgroundFolds.delete(agent)
+  return {compactionId:record.start.data.compactionId,startSeq:record.start.seq,summarySeq:record.summary.seq,endSeq:end.seq,
+    summary:record.summary.data.summary,shadowedRange:record.summary.data.shadowedRange,
+    shadowedSeqs:record.summary.data.shadowedSeqs,shadowedTokenCount:record.summary.data.shadowedTokenCount}
+}
+
 export function prepareAsyncRegion(engine, agent, selection) {
   const session = agent.session
   const surfaceNodes = session.surface.nodes
@@ -147,13 +164,14 @@ export function prepareAsyncRegion(engine, agent, selection) {
 
 export async function summarizeAsyncRegion(engine, agent, prepared, signal) {
   signal?.throwIfAborted()
-  const attemptKey=hash([prepared.input,prepared.summaryTargetTokens,prepared.summaryDepth,
+  const attemptKey=hash([prepared.input,prepared.summaryTargetTokens,prepared.summaryDepth,prepared.conversationRoute,
     prepared.trustedChildNodeIds,engine.summaryRouteFingerprint(),engine.rollingConfig])
   if (engine.superLcmStore.summaryBlocked(agent.session.id,attemptKey)) {
     const error=Error('相同输入的摘要没有节省空间，请调整摘要模型或粒度后重试');error.code='SUPERLCM_SUMMARY_NO_PROGRESS';throw error
   }
   const compactionId = CompactionId(randomUUID())
   const summaryResult = await engine.summarize(prepared.input, agent, signal, {
+    ...(prepared.conversationRoute?{conversationRoute:prepared.conversationRoute}:{}),
     trustedChildNodeIds: prepared.trustedChildNodeIds,
     summaryTask: { level:prepared.summaryDepth ?? Math.max(0,...prepared.trustedChildNodeIds.map(id=>nodeLevel(engine.superLcmStore,agent.session.id,id))),
       first:prepared.start,last:prepared.end, ...(prepared.summaryTargetTokens ? {targetTokens:prepared.summaryTargetTokens} : {}) },
@@ -206,7 +224,16 @@ export function commitAsyncRegion(engine, agent, summarized) {
       sourceEventSeqs: [startEvent.seq, summaryEvent.seq, ...summarized.shadowedSeqs],
     })
     closing = true
-    const endEvent = session.append('compaction/end', lifecycle)
+    let endEvent
+    try { endEvent = session.append('compaction/end', lifecycle) }
+    catch {
+      // A single transient end-write failure must not leave a successfully
+      // replaced context permanently busy. Persistent failures are repaired
+      // from the durable start/summary/checkpoint proof on the next request.
+      const recovered = recoverInterruptedCommit(engine,agent)
+      if (!recovered) throw Error('Compaction replacement could not be closed')
+      endEvent = session.eventAt(recovered.endSeq)
+    }
     return {
       compactionId: summarized.compactionId,
       startSeq: startEvent.seq,

@@ -24,7 +24,11 @@ export function controlsConfig(raw) {
   if(budgetMode==='tokens'&&out.minRetainTokens>=out.softActiveTokens)throw Error('原文保留量必须小于开始压缩门槛')
   if(out.pressureFoldTokens>out.foldBatchTokens)throw Error('最小压缩批量不能超过每批处理量')
   if(raw.auto&&(typeof raw.summarizationProvider!=='string'||!raw.summarizationProvider||typeof raw.summarizationModel!=='string'||!raw.summarizationModel))throw Error('请选择 DSH 已配置的压缩模型')
-  return {...out,summarizationProvider:raw.summarizationProvider||'',summarizationModel:raw.summarizationModel||'',summaryAdapter:raw.summaryAdapter||null}
+  const fallbackProvider=raw.fallbackSummarizationProvider??'',fallbackModel=raw.fallbackSummarizationModel??''
+  if(typeof fallbackProvider!=='string'||typeof fallbackModel!=='string'||!!fallbackProvider!==!!fallbackModel)throw Error('备用摘要供应商和模型须同时设置')
+  if(fallbackProvider&&fallbackProvider===raw.summarizationProvider&&fallbackModel===raw.summarizationModel)throw Error('备用摘要模型须与主摘要模型不同')
+  return {...out,summarizationProvider:raw.summarizationProvider||'',summarizationModel:raw.summarizationModel||'',summaryAdapter:raw.summaryAdapter||null,
+    ...(fallbackProvider?{fallbackSummarizationProvider:fallbackProvider,fallbackSummarizationModel:fallbackModel}:{})}
 }
 export function readControls(file) {
   if(!file||!existsSync(file))return null

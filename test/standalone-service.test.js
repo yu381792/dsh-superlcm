@@ -157,3 +157,19 @@ for(const kind of ['missing','unknown','max-tokens','tool-calls','error','aborte
   },true,async()=>chunks)
  })
 }
+
+test('disabled archive drains an ignored-abort provider before late output is released',async()=>{
+ let finish,started;const begun=new Promise(resolve=>started=resolve),answer=new Promise(resolve=>finish=resolve)
+ await fixture(async({session,archive,append,file,doc})=>{
+  append('Synthetic source facts '.repeat(500));append('More synthetic source facts '.repeat(500))
+  archive.schedule(session.id);await begun
+  writeFileSync(file,JSON.stringify(settingsDocument({...doc.settings,summaryEnabled:false},'disabled')))
+  archive.changed()
+  let timer
+  try{await Promise.race([archive.drain(),new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('Cancelled archive still waits for the provider')),200))])}
+  finally{clearTimeout(timer)}
+  assert.equal(archive.db.nodes(session.id).length,0)
+  finish('Late source summary');await tick()
+  assert.equal(archive.db.nodes(session.id).length,0)
+ },true,async()=>{started();return answer})
+})

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.32 — 2026-10-11
+
+- Give each summary attempt an independent bounded deadline, including providers that ignore cancellation. Preserve safe SDK authentication/quota classes and route cooldowns.
+- Keep completed drafts after transient commit-write failures. Repair a proven replacement whose closing event failed, including after restart, without another model call or replacement.
+- Cancel staged compaction on user stop and reject late results. Retain explicit configured backup routes across control parsing.
+- Under emergency pressure, if all configured summary routes have exhausted quota or unusable credentials, try the current conversation model once for the full prefix, reusing verified draft content. Fail closed if that final call fails.
+- Add permanent real DSH adapter and lifecycle fault regressions. See [behavior and limits](docs/FAULT-RESILIENCE.md).
+
 ## 0.5.31 — 2026-10-11
 
 - Fix restored single-root summary drafts rejected by native DSH JSON validation.

@@ -1,4 +1,10 @@
 import { createHash } from 'node:crypto'
+import {abortable} from './summary-attempt.js'
+const routeFailureCodes = new Map([
+  ...['AUTH','QUOTA','RATE_LIMIT','TIMEOUT','TRANSPORT','CONTEXT_WINDOW_EXCEEDED'].map(code=>[code,code]),
+  ['ACCOUNT_QUOTA','QUOTA'],['ACCOUNT_SIGN_IN_REQUIRED','AUTH'],['ACCOUNT_TOKEN_INVALID','AUTH'],
+  ['MISSING_CREDENTIAL','AUTH'],['INVALID_CREDENTIAL','AUTH'],
+])
 
 export function summarySessionId(sessionId, route) {
   return 'superlcm-summary-' + createHash('sha256')
@@ -10,17 +16,29 @@ export function summarySessionId(sessionId, route) {
 // Require the actual terminal event before any summary may replace or be stored.
 export async function* completeSummaryStream(stream, signal) {
   let finished = false,received=false
-  for await (const chunk of stream) {
+  const iterator = stream[Symbol.asyncIterator]()
+  try { for (;;) {
+    signal?.throwIfAborted()
+    const {value:chunk,done} = await abortable(iterator.next(),signal)
+    if (done) break
     signal?.throwIfAborted()
     if (finished || chunk.type === 'tool-call-delta' || chunk.blockType === 'tool-call' || chunk.block?.type === 'tool-call') {
       throw new Error('Summary generation was incomplete; unexpected summary stream output, original content retained')
     }
     if (chunk.type === 'finish') {
-      if (chunk.reason?.kind !== 'stop') throw new Error('Summary generation was incomplete; original content retained')
+      if (chunk.reason?.kind !== 'stop') {
+        const raw = chunk.reason?.failure?.code ?? chunk.reason?.code
+        const code = routeFailureCodes.get(raw)
+        throw Object.assign(new Error('Summary generation was incomplete; original content retained'),code ? {code} : {})
+      }
       finished = true
     }
     if(chunk.type==='text-delta'&&chunk.text)received=true
     yield chunk
+  } } finally {
+    // Async generator return() can itself queue behind an ignored abort.
+    // Request cleanup without waiting for that uncooperative provider.
+    try { Promise.resolve(iterator.return?.()).catch(() => {}) } catch {}
   }
   signal?.throwIfAborted()
   if (!finished) throw Object.assign(new Error(received?'Summary generation was incomplete; stream cut off before its final event, original content retained':'Summary generation was incomplete; no completion data, original content retained'),{summaryKind:received?'stream_cutoff':'stream_empty'})

@@ -62,6 +62,7 @@ export function latestUserIndex(session) {
 }
 export async function pressureStep(engine, agent, signal) {
   const policy = await resolvePolicy(engine, agent, signal)
+  engine.bindBackgroundCancellation?.(agent,signal)
   engine.restoreDraft?.(agent)
   engine.tryCommitBackgroundFold(agent, { allowPressure: true })
   if (engine.canPrepareBackground(agent)) {
@@ -81,5 +82,6 @@ export async function pressureStep(engine, agent, signal) {
     })])
   } finally { clearTimeout(timer); if (abort) signal.removeEventListener('abort', abort) }
   engine.tryCommitBackgroundFold(agent, {allowPressure:true})
+  if(engine.ctx.tokenMeter.measure(agent.session).totalTokens>=policy.hardActiveTokens)await engine.rescueWithConversation?.(agent,signal)
   if (engine.ctx.tokenMeter.measure(agent.session).totalTokens >= policy.hardActiveTokens) throw Error('当前轮原文或后台摘要仍占用过多空间，请等待摘要就绪或缩短本轮输入。当前请求已保留。')
 }

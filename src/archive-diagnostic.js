@@ -19,6 +19,7 @@ const named=new Map([
   ['TimeoutError',['TIMEOUT','后台请求超时']],
 ])
 const streamKinds={stream_empty:['SUMMARY_STREAM_EMPTY','摘要模型连接结束但未返回正文'],stream_cutoff:['SUMMARY_STREAM_CUTOFF','摘要模型传输中断，未收到正常结束信号']}
+const routeKinds={AUTH:['SUMMARY_AUTH','摘要模型认证失败'],QUOTA:['SUMMARY_QUOTA','摘要模型额度不足'],RATE_LIMIT:['SUMMARY_RATE_LIMIT','摘要模型请求频率受限'],TIMEOUT:['TIMEOUT','后台请求超时'],TRANSPORT:['SUMMARY_TRANSPORT','摘要模型连接失败']}
 export function archiveDiagnostic(error,{session,stage='capture'}={}) {
   const message=typeof error?.message==='string'?error.message:''
   const status=[error?.status,error?.statusCode,error?.cause?.status].find(x=>Number.isInteger(x)&&x>=400&&x<=599)
@@ -26,6 +27,7 @@ export function archiveDiagnostic(error,{session,stage='capture'}={}) {
   // turn a refused legacy migration into a model error.
   let [code,detail]=named.get(error?.name)||[]
   if(!code&&stage==='summary'&&streamKinds[error?.summaryKind])[code,detail]=streamKinds[error.summaryKind]
+  if(!code&&stage==='summary'&&routeKinds[error?.code])[code,detail]=routeKinds[error.code]
   if(!code&&status){code='HTTP_'+status;detail=status===401||status===403?'摘要模型认证失败':status===429?'摘要模型额度或请求频率受限':'摘要模型服务返回错误'}
   if(!code)[code,detail]=(reasons.find(([match])=>match.test(message))||[]).slice(1)
   if(!code){

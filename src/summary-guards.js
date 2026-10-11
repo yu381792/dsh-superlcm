@@ -26,6 +26,7 @@ export class SummaryGuards {
   constructor(clock = Date.now) { this.clock = clock; this.routes = new Map(); this.sessions = new SessionFoldRegistry() }
   routeKey(route) { return JSON.stringify([route.provider, route.model]) }
   canTry(route) { return (this.routes.get(this.routeKey(route))?.retryAt ?? 0) <= this.clock() }
+  unavailable(route) { const state=this.routes.get(this.routeKey(route));return state?.permanent===true&&state.retryAt>this.clock() }
   assertRoute(route) {
     if (this.canTry(route)) return
     const error = Error('摘要模型正在等待重试：' + route.provider + '/' + route.model)
@@ -34,8 +35,9 @@ export class SummaryGuards {
   failedRoute(route, error, baseMs) {
     if (error?.code === 'SUPERLCM_SUMMARY_COOLDOWN') return
     const key = this.routeKey(route), failures = (this.routes.get(key)?.failures ?? 0) + 1
-    const delay = authFailure(error) ? Math.max(300000, baseMs) : Math.min(baseMs * 16, baseMs * 2 ** Math.min(4, failures - 1))
-    this.routes.set(key, { failures, retryAt: this.clock() + delay })
+    const permanent = authFailure(error) || error?.code === 'QUOTA' || error?.summaryKind === 'quota'
+    const delay = permanent ? Math.max(300000, baseMs) : Math.min(baseMs * 16, baseMs * 2 ** Math.min(4, failures - 1))
+    this.routes.set(key, { failures, permanent, retryAt: this.clock() + delay })
   }
   succeededRoute(route) { this.routes.delete(this.routeKey(route)) }
   canStart(agent, fingerprint) {

@@ -261,6 +261,9 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
         if (next !== null) this.startBackgroundFold(agent, next)
       })
       .catch((error) => {
+        // A completed recovery prefix may already have been committed under
+        // emergency pressure. Its cancelled/late successor must not restore it.
+        if (this.backgroundFolds.get(agent) !== state) return
         this.compressionReporter.report(agent.session.id, controller.signal.aborted ? 'cancelled' : 'failed', selection)
         if (this.backgroundFolds.get(agent) === state) {
           const recovered = state.recoveryReady ?? previous
@@ -278,8 +281,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   tryCommitBackgroundFold(agent, options = {}) {
     const policy = currentPolicy(this, agent)
     if (!policy) return null
-    const state = this.backgroundFolds.get(agent)
+    const pending = this.backgroundFolds.get(agent)
     const activeTokens = options.allowPressure === true || options.force === true ? this.ctx.tokenMeter.measure(agent.session).totalTokens : 0
+    const emergency = policy.budgetMode === 'ratio' && activeTokens >= policy.hardActiveTokens
+    const state = pending?.status === 'ready' ? pending : emergency ? pending?.recoveryReady : pending
     if (state && state.cutoffEnd === undefined && (activeTokens >= policy.softActiveTokens || options.force === true)) {
       const measurement = this.ctx.tokenMeter.measure(agent.session)
       const priced = selectionPricing(measurement, agent.session.requestHeader())
@@ -302,12 +307,23 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     if (options.force !== true) {
       if (activeTokens < policy.softActiveTokens) return null
     }
-    // Catch up the last eligible span before the single live replacement.
-    if (this.planRolling(agent) !== null) return null
-    if (draftTokens(this, agent, state.frontier) > summaryBudget(policy)) return null
+    const protectedIndex = policy.protectLatestUser ? latestUserIndex(agent.session) : agent.session.surface.nodes.length
+    const endIndex = agent.session.surface.nodes.indexOf(state.summarized.end)
+    if (endIndex < 0 || endIndex >= protectedIndex) return null
+    const checkpointTokens = draftTokens(this, agent, state.frontier)
+    const unfinished = pending !== state || this.planRolling(agent) !== null || checkpointTokens > summaryBudget(policy)
+    if (unfinished) {
+      // A failed leaf/merge must not strand a usable completed prefix forever.
+      // Keep the unfinished range verbatim; only publish the ready prefix when
+      // it buys real headroom below the normal switch threshold. Price the new
+      // checkpoint conservatively, without inflating the removed token count.
+      const projected = activeTokens - state.summarized.shadowedRouteTokenCount + checkpointTokens
+      if (!emergency || !Number.isFinite(projected) || projected >= policy.softActiveTokens) return null
+    }
     try {
       const result = this.commitBackgroundSelection(agent, state.summarized)
       if (result === null) return null
+      if (pending !== state) pending?.controller?.abort(Error('已提交完成的摘要前缀，未完成原文保留'))
       this.backgroundFolds.delete(agent)
       finishDraft(this, agent)
       this.compressionReporter.report(agent.session.id, 'committed', state.summarized)

@@ -182,9 +182,10 @@ export function commitAsyncRegion(engine, agent, summarized) {
   const startEvent = session.append('compaction/start', lifecycle)
   let closing = false
   try {
-    const callRecord = summarized.llmStreamCall === true
-      ? { rawOutput: summarized.rawOutput, llmStreamCall: true }
-      : summarized.rawOutput === undefined ? {} : { rawOutput: summarized.rawOutput }
+    // Durable drafts deliberately omit the provider stream. Do not emit an
+    // undefined rawOutput (rejected by DSH) or claim a stream without its data.
+    const callRecord = summarized.rawOutput === undefined ? {}
+      : { rawOutput: summarized.rawOutput, ...(summarized.llmStreamCall === true ? { llmStreamCall: true } : {}) }
     const summaryEvent = session.append('compaction/summary', {
       compactionId: summarized.compactionId,
       summary: summarized.summary,

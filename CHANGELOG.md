@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.31 — 2026-10-11
+
+- Fix restored single-root summary drafts rejected by native DSH JSON validation.
+- Under emergency pressure, submit a validated completed prefix when it creates space below the normal switch threshold; keep unfinished originals and current human input.
+- Cancel superseded pending merges and reject late results. Normal preparation still preserves the live context until the fixed range is ready.
+- Add eight offline native-host regressions; share the DSH fix with full SuperLcm 0.5.28.
+
 ## 0.5.30
 
 - Give each archive quality retry its own request timeout while preserving task cancellation and ownership checks.

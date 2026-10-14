@@ -120,6 +120,61 @@ test('preparation below emergency pressure still waits for the frozen range',asy
   assert.deepEqual(h.session.snapshotEvents(),original)
 }))
 
+test('emergency reuses the previous ready prefix while the next raw batch is still generating',async()=>host(async h=>{
+  const {raw,rest,current,state}=await readyPrefix(h)
+  let release,entered
+  const started=new Promise(resolve=>{entered=resolve})
+  h.engine.summarizeBackgroundSelection=async()=>{entered();return await new Promise(resolve=>{release=resolve})}
+  const original=structuredClone(h.session.snapshotEvents()),generation=h.session.surface.replaceGeneration
+  assert.ok(h.engine.startBackgroundFold(h.agent,h.engine.planRolling(h.agent)))
+  await started
+  const pending=h.engine.backgroundFolds.get(h.agent)
+  assert.equal(pending.recoveryReady,state)
+  await pressureStep(h.engine,h.agent,new AbortController().signal)
+  assert.equal(h.session.surface.replaceGeneration,generation+1)
+  assert.ok(pending.controller.signal.aborted)
+  assert.ok(h.session.surface.nodes.includes(rest.seq));assert.ok(h.session.surface.nodes.includes(current.seq))
+  assert.ok(!h.session.surface.nodes.includes(raw.seq));assertRetained(h,original)
+  release(state.summarized);await pending.promise
+  assert.equal(h.session.surface.replaceGeneration,generation+1)
+  assert.notEqual(h.engine.backgroundFolds.get(h.agent),pending,'late output cannot restore the cancelled successor')
+}))
+
+test('emergency commits the first sufficient completed batch without waiting for its blocked successor',async()=>{
+  let release,started,count=0
+  const blocked=new Promise(resolve=>{started=resolve})
+  await host(async h=>{
+    for(let i=0;i<5;i++)append(h.session,'x'.repeat(76000))
+    const current=append(h.session,'Current protected request.')
+    await resolvePolicy(h.engine,h.agent,new AbortController().signal)
+    const original=structuredClone(h.session.snapshotEvents()),generation=h.session.surface.replaceGeneration
+    const done=pressureStep(h.engine,h.agent,new AbortController().signal)
+    await blocked
+    await done
+    assert.equal(h.session.surface.replaceGeneration,generation+1)
+    assert.ok(h.ctx.tokenMeter.measure(h.session).totalTokens<80000)
+    assert.ok(h.session.surface.nodes.includes(current.seq));assertRetained(h,original)
+    release('Late successor facts.')
+    await tick();await tick()
+    assert.equal(h.session.surface.replaceGeneration,generation+1)
+    assert.equal(h.engine.backgroundFolds.has(h.agent),false)
+  },{reply:async()=>++count===1?'Preserved historical facts.':await new Promise(resolve=>{release=resolve;started()})})
+})
+
+test('emergency progress shares one total deadline across successive healthy batches',async()=>host(async h=>{
+  h.engine.rollingConfig.summaryTimeoutMs=90
+  for(let i=0;i<12;i++)append(h.session,'x'.repeat(38000))
+  append(h.session,'Current protected request.')
+  const original=structuredClone(h.session.snapshotEvents()),generation=h.session.surface.replaceGeneration
+  const controller=new AbortController(),start=Date.now()
+  try {
+    await assert.rejects(pressureStep(h.engine,h.agent,controller.signal),/后台摘要尚未就绪/)
+    assert.ok(Date.now()-start<400,'new batches cannot renew admission indefinitely')
+    assert.ok(h.calls.length>=2,'the first healthy batch completed before the shared deadline')
+    assert.equal(h.session.surface.replaceGeneration,generation);assertRetained(h,original)
+  } finally {controller.abort(Error('Stop the preserved test request'));await h.engine.settleBackgroundFold(h.agent)}
+},{reply:async()=>{await new Promise(resolve=>setTimeout(resolve,55));return 'Preserved historical facts.'}}))
+
 test('an insufficient prefix cannot unlock a still oversized main request',async()=>host(async h=>{
   await readyPrefix(h,{tail:360000})
   const original=h.session.snapshotEvents()

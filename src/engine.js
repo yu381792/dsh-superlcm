@@ -232,6 +232,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
 
     const controller = new AbortController()
     const state = { status: 'summarizing', selection, prepared, controller, promise: null, summarized: null, parts,
+      recoveryReady: previous?.status === 'ready' && previous.summarized ? previous : undefined,
       signature: policy.signature, cutoffEnd: previous?.cutoffEnd ?? (selection.activeTokens >= policy.softActiveTokens ? selection.eligibleEnd : undefined), revision:this.controlRevision, generation: this.runtimeGeneration }
     this.backgroundFolds.set(agent, state)
     this.backgroundControllers.add(controller)

@@ -75,6 +75,23 @@ function sessionAgent(h,{seed,meta}={}) {
   return {session,options:{provider:'local',model:'main'}}
 }
 
+test('real Agent.send releases emergency pressure after a safe batch while its successor is blocked',async()=>{
+  let release,summaryCalls=0
+  await host(async h=>{
+    const agent=await loop(h.ctx,'progressive-admission')
+    for(let i=0;i<5;i++)append(agent.session,'Historical facts '+i+' '+'x'.repeat(76000))
+    const original=recordOriginals(agent.session),generation=agent.session.surface.replaceGeneration
+    assert.deepEqual(await send(h.ctx,agent,'Current exact request.'),[])
+    assert.equal(agent.session.surface.replaceGeneration,generation+1)
+    assert.equal(h.calls.filter(call=>call.model==='main').length,1)
+    assert.ok(agent.session.surface.nodes.some(seq=>JSON.stringify(agent.session.eventAt(seq).data).includes('Current exact request.')))
+    recordOriginals(agent.session,original);verifyTree(h,agent.session,'progressive-admission')
+    release?.('Late successor summary.')
+    await tick();await tick()
+    assert.equal(agent.session.surface.replaceGeneration,generation+1)
+  },{reply:async options=>options.model==='main'?'Main answer after safe admission.':++summaryCalls===1?summary:await new Promise(resolve=>{release=resolve})})
+})
+
 function recordOriginals(session,known=new Map()) {
   for(const [seq,sha] of known)assert.equal(digest(session.eventAt(seq)),sha,`original event ${seq} must remain exact`)
   for(const event of session.snapshotEvents())known.set(event.seq,digest(event))

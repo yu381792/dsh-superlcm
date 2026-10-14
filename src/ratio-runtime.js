@@ -3,6 +3,7 @@ import { deriveRatioPolicy } from './ratio-policy.js'
 import { selectionPricing } from './selection-pricing.js'
 import { SessionFoldRegistry } from './summary-guards.js'
 import { isCompactCheckpointSource } from '@deepseek-ai/dsh-compaction'
+import { abortable } from './summary-attempt.js'
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export function requestIdentity(agent) {
@@ -70,17 +71,22 @@ export async function pressureStep(engine, agent, signal) {
     if (selection) engine.startBackgroundFold(agent, selection)
   }
   if (policy.budgetMode !== 'ratio' || engine.ctx.tokenMeter.measure(agent.session).totalTokens < policy.hardActiveTokens) return
-  // Emergency headroom buys a bounded wait. A stalled summary must not send
-  // an oversized main request or hand control to a competing compressor.
-  let timer, abort
+  // Wait for progress, not the whole frozen multi-batch job. At each completed
+  // batch a verified prefix may already release safe headroom. One total
+  // deadline covers all batches; later batches do not reset it.
+  const deadline = new AbortController()
+  const waiting = AbortSignal.any([signal, deadline.signal])
+  const timer = setTimeout(() => deadline.abort(Error('后台摘要尚未就绪，请稍后重试。当前请求已保留。')), policy.summaryTimeoutMs)
   try {
-    await Promise.race([engine.settleBackgroundFold(agent), new Promise((_,reject) => {
-      timer = setTimeout(() => reject(Error('后台摘要尚未就绪，请稍后重试。当前请求已保留。')), Math.min(policy.summaryTimeoutMs, 30000))
-      abort = () => reject(signal.reason ?? Error('请求已停止'))
-      signal.addEventListener('abort', abort, {once:true})
-      if (signal.aborted) abort()
-    })])
-  } finally { clearTimeout(timer); if (abort) signal.removeEventListener('abort', abort) }
+    for (;;) {
+      waiting.throwIfAborted()
+      engine.tryCommitBackgroundFold(agent, {allowPressure:true})
+      if (engine.ctx.tokenMeter.measure(agent.session).totalTokens < policy.hardActiveTokens) break
+      const pending = engine.backgroundFolds.get(agent)
+      if (!['summarizing','cancelling'].includes(pending?.status) || !pending.promise) break
+      await abortable(pending.promise, waiting)
+    }
+  } finally { clearTimeout(timer) }
   engine.tryCommitBackgroundFold(agent, {allowPressure:true})
   if(engine.ctx.tokenMeter.measure(agent.session).totalTokens>=policy.hardActiveTokens)await engine.rescueWithConversation?.(agent,signal)
   if (engine.ctx.tokenMeter.measure(agent.session).totalTokens >= policy.hardActiveTokens) throw Error('当前轮原文或后台摘要仍占用过多空间，请等待摘要就绪或缩短本轮输入。当前请求已保留。')

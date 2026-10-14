@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.34 — 2026-10-14
+
+- Fix healthy multi-batch background jobs causing a main-request failure at 90%: evaluate safe completed prefixes after each batch instead of waiting for every successor. Keep the preceding ready prefix available while a new raw batch is generating.
+- Bound emergency admission by one configured summary deadline across all batches, instead of an unrelated 30-second timer. Preserve unfinished originals, current input, cancellation fences and request rebuilding.
+- Add native lifecycle regressions for blocked successors and actual Agent.send recovery.
+
 ## 0.5.33 — 2026-10-14
 
 - Fix repeated DSH pressure failures when large fixed system/tool prompts squeezed the automatic summary budget down to 1K. Post-compaction targets now include fixed prompt costs plus the normal summary and recent-original budgets; impossible low-threshold configurations still fail before an oversized request.

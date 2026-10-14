@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.33 — 2026-10-14
+
+- Fix repeated DSH pressure failures when large fixed system/tool prompts squeezed the automatic summary budget down to 1K. Post-compaction targets now include fixed prompt costs plus the normal summary and recent-original budgets; impossible low-threshold configurations still fail before an oversized request.
+- Reuse existing durable drafts and advance remaining original blocks instead of repeatedly condensing an already usable checkpoint. Add regression coverage for an insufficient ready prefix, exact current input, originals and one replacement across repeated pressure checks.
+
 ## 0.5.32 — 2026-10-11
 
 - Give each summary attempt an independent bounded deadline, including providers that ignore cancellation. Preserve safe SDK authentication/quota classes and route cooldowns.

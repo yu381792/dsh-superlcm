@@ -83,12 +83,34 @@ test('restored single-root stream draft commits with strict native JSON and reco
   },{db,seed})
 })
 
-test('a small over-budget checkpoint can release emergency pressure without waiting for another merge',async()=>host(async h=>{
+test('large fixed prompts keep a usable checkpoint budget and release emergency pressure',async()=>host(async h=>{
   const {policy}=await readyPrefix(h,{first:120000,tail:60000,fixed:200000})
-  assert.equal(policy.summaryPrefixTargetTokens,1024)
+  assert.equal(policy.summaryPrefixTargetTokens,6000)
   assert.ok(draftTokens(h.engine,h.agent,h.engine.backgroundFolds.get(h.agent).frontier)>1024)
+  assert.ok(draftTokens(h.engine,h.agent,h.engine.backgroundFolds.get(h.agent).frontier)<policy.summaryPrefixTargetTokens)
   const result=h.engine.tryCommitBackgroundFold(h.agent,{allowPressure:true});assert.ok(result)
   assert.ok(h.ctx.tokenMeter.measure(h.session).totalTokens<policy.softActiveTokens)
+},{reply:async()=> 'Preserved historical facts and evidence. '.repeat(120)}))
+
+test('high fixed costs advance an insufficient ready prefix instead of repeatedly condensing it',async()=>host(async h=>{
+  const {raw,rest,current,policy,state}=await readyPrefix(h,{first:32000,tail:160000,fixed:200000})
+  const before=h.ctx.tokenMeter.measure(h.session).totalTokens
+  assert.ok(before>=policy.hardActiveTokens)
+  const checkpoint=draftTokens(h.engine,h.agent,state.frontier)
+  assert.ok(checkpoint>1024&&checkpoint<policy.summaryPrefixTargetTokens)
+  assert.ok(before-state.summarized.shadowedRouteTokenCount+checkpoint>=policy.softActiveTokens,'the prefix alone cannot admit the request')
+  const next=h.engine.planRolling(h.agent)
+  assert.equal(next.treeOnly,undefined);assert.equal(next.start,rest.seq)
+  const original=structuredClone(h.session.snapshotEvents()),generation=h.session.surface.replaceGeneration
+  await pressureStep(h.engine,h.agent,new AbortController().signal)
+  assert.equal(h.session.surface.replaceGeneration,generation+1)
+  assert.ok(h.ctx.tokenMeter.measure(h.session).totalTokens<policy.softActiveTokens)
+  assert.ok(!h.session.surface.nodes.includes(raw.seq));assert.ok(!h.session.surface.nodes.includes(rest.seq))
+  assert.ok(h.session.surface.nodes.includes(current.seq));assertRetained(h,original)
+  assert.equal(h.calls.length,2,'reuse the ready prefix and summarize only the remaining raw block')
+  await pressureStep(h.engine,h.agent,new AbortController().signal)
+  assert.equal(h.session.surface.replaceGeneration,generation+1)
+  assert.equal(h.calls.length,2)
 },{reply:async()=> 'Preserved historical facts and evidence. '.repeat(120)}))
 
 test('preparation below emergency pressure still waits for the frozen range',async()=>host(async h=>{
@@ -134,6 +156,9 @@ test('emergency commits a recovery prefix while a successor merge is pending; la
   let number=0
   await host(async h=>{
     const {state}=await readyPrefix(h,{first:120000,tail:60000,fixed:200000})
+    // Retain the existing recovery regression for an explicitly constrained
+    // draft budget; automatic ratio budgets no longer create this tiny budget.
+    h.engine.resolvedPolicies.get(h.agent).summaryPrefixTargetTokens=1024
     assert.ok(h.engine.startBackgroundFold(h.agent,{...state.selection,treeOnly:true}))
     await tick()
     const pending=h.engine.backgroundFolds.get(h.agent)

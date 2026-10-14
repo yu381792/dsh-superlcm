@@ -28,10 +28,14 @@ export function deriveRatioPolicy(base, {contextWindow,reservedCompletionTokens=
   const softActiveTokens = Math.floor(inputBudget * ratios.switchRatio)
   const hardActiveTokens = Math.floor(inputBudget * ratios.emergencyRatio)
   const minRetainTokens = Math.min(Math.floor(inputBudget * 0.2), Math.floor(softActiveTokens * 0.15), Math.max(2048, Math.min(65536, Math.floor(inputBudget * 0.04))))
-  const postTargetTokens = Math.min(softActiveTokens - 1, Math.max(Math.floor(Math.min(inputBudget * 0.1,softActiveTokens * 0.5)), fixedTokens + minRetainTokens + 1024))
-  const summaryPrefixTargetTokens = Math.max(256, Math.min(Math.floor(inputBudget * 0.06), postTargetTokens - fixedTokens - minRetainTokens))
+  // Fixed prompts/tools cannot be compressed. Add them to the normal summary
+  // and recent-original budgets instead of squeezing the summary into the
+  // last 1K of an otherwise impossible 10% post-compaction target.
+  const desiredSummaryTokens = Math.max(256, Math.floor(Math.min(inputBudget * 0.06, softActiveTokens * 0.5)))
+  const postTargetTokens = Math.min(softActiveTokens - 1, Math.max(Math.floor(Math.min(inputBudget * 0.1,softActiveTokens * 0.5)), fixedTokens + minRetainTokens + desiredSummaryTokens))
+  const summaryPrefixTargetTokens = Math.min(desiredSummaryTokens, postTargetTokens - fixedTokens - minRetainTokens)
   const foldBatchTokens = Math.max(256, Math.min(base.foldBatchTokens, Math.floor((softActiveTokens - fixedTokens - minRetainTokens) / 2)))
-  if (fixedTokens + minRetainTokens + summaryPrefixTargetTokens >= hardActiveTokens || foldBatchTokens < 512) throw Error('当前压缩比例过低或系统工具占用过多，无法容纳摘要和近期原文，请提高比例或减少固定占用')
+  if (summaryPrefixTargetTokens < 256 || fixedTokens + minRetainTokens + summaryPrefixTargetTokens >= hardActiveTokens || foldBatchTokens < 512) throw Error('当前压缩比例过低或系统工具占用过多，无法容纳摘要和近期原文，请提高比例或减少固定占用')
   return {...base,...ratios,inputBudget,contextWindow,reservedCompletionTokens,signature,headerFingerprint,
     prepareActiveTokens,softActiveTokens,hardActiveTokens,minRetainTokens,postTargetTokens,
     summaryPrefixTargetTokens,foldBatchTokens,pressureFoldTokens:foldBatchTokens,protectLatestUser:true,

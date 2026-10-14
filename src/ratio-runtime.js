@@ -4,6 +4,7 @@ import { selectionPricing } from './selection-pricing.js'
 import { SessionFoldRegistry } from './summary-guards.js'
 import { isCompactCheckpointSource } from '@deepseek-ai/dsh-compaction'
 import { abortable } from './summary-attempt.js'
+import {compactionBusy} from './async-region.js'
 
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export function requestIdentity(agent) {
@@ -61,16 +62,21 @@ export function latestUserIndex(session) {
   if(turnStart>=0) for(let i=index-1;i>=0&&session.surface.nodes[i]>turnStart;i--) if(realUser(session.eventAt(session.surface.nodes[i])))index=i
   return index
 }
+export function activeInputTokens(engine,agent) {
+  const measurement=engine.ctx.tokenMeter.measure(agent.session)
+  return engine.rollingConfig.budgetMode==='ratio'?selectionPricing(measurement,agent.session.requestHeader()).activeTokens:measurement.totalTokens
+}
 export async function pressureStep(engine, agent, signal) {
   const policy = await resolvePolicy(engine, agent, signal)
   engine.bindBackgroundCancellation?.(agent,signal)
   engine.restoreDraft?.(agent)
   engine.tryCommitBackgroundFold(agent, { allowPressure: true })
+  if(compactionBusy(agent.session))throw Error('压缩结束记录尚未写入，当前请求已保留，请稍后重试。')
   if (engine.canPrepareBackground(agent)) {
     const selection = engine.planRolling(agent)
     if (selection) engine.startBackgroundFold(agent, selection)
   }
-  if (policy.budgetMode !== 'ratio' || engine.ctx.tokenMeter.measure(agent.session).totalTokens < policy.hardActiveTokens) return
+  if (policy.budgetMode !== 'ratio' || activeInputTokens(engine,agent) < policy.hardActiveTokens) return
   // Wait for progress, not the whole frozen multi-batch job. At each completed
   // batch a verified prefix may already release safe headroom. One total
   // deadline covers all batches; later batches do not reset it.
@@ -81,13 +87,13 @@ export async function pressureStep(engine, agent, signal) {
     for (;;) {
       waiting.throwIfAborted()
       engine.tryCommitBackgroundFold(agent, {allowPressure:true})
-      if (engine.ctx.tokenMeter.measure(agent.session).totalTokens < policy.hardActiveTokens) break
+      if (activeInputTokens(engine,agent) < policy.hardActiveTokens) break
       const pending = engine.backgroundFolds.get(agent)
       if (!['summarizing','cancelling'].includes(pending?.status) || !pending.promise) break
       await abortable(pending.promise, waiting)
     }
   } finally { clearTimeout(timer) }
   engine.tryCommitBackgroundFold(agent, {allowPressure:true})
-  if(engine.ctx.tokenMeter.measure(agent.session).totalTokens>=policy.hardActiveTokens)await engine.rescueWithConversation?.(agent,signal)
-  if (engine.ctx.tokenMeter.measure(agent.session).totalTokens >= policy.hardActiveTokens) throw Error('当前轮原文或后台摘要仍占用过多空间，请等待摘要就绪或缩短本轮输入。当前请求已保留。')
+  if(activeInputTokens(engine,agent)>=policy.hardActiveTokens)await engine.rescueWithConversation?.(agent,signal)
+  if (activeInputTokens(engine,agent) >= policy.hardActiveTokens) throw Error('当前轮原文或后台摘要仍占用过多空间，请等待摘要就绪或缩短本轮输入。当前请求已保留。')
 }

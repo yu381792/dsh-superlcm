@@ -7,6 +7,7 @@ import { appendRecallEnvelope } from './marker.js'
 import { nativeSummaryTask } from './summary-task.js'
 import { summaryCallContext } from './summary-session.js'
 import {summaryAttempt} from './summary-attempt.js'
+import {rescueOutputBudget} from './rescue-budget.js'
 import { SUMMARY_SYSTEM, RECALL_POLICY, summaryInstructions, summaryClosing, checkedSummary } from '../src/summary-policy.js'
 export async function summarizeWithRecall(engine,args) {
     const lease=args[3]?.conversationRoute ? undefined : engine.acquireSummary?.()
@@ -48,6 +49,10 @@ export async function summarizeWithRecall(engine,args) {
       const ctx = !finalConversationRoute && modelContext && route?.provider === primaryRoute.provider ? modelContext : engine.ctx
       const input = summarizeArgs[0]
       const directive = SUMMARY_SYSTEM + '\n\n' + summaryInstructions(task)+'\n'+summaryClosing(task,'all preceding conversation messages')
+      if(finalConversationRoute){
+        const maxTokens=rescueOutputBudget(engine,summarizeArgs[1],input,directive,task.targetTokens,config.maxTokens)
+        receiver.config={...receiver.config,maxTokens,modelPolicies:receiver.config.modelPolicies.map(policy=>({...policy,maxTokens:Math.min(policy.maxTokens??maxTokens,maxTokens)}))}
+      }
       try {
         for(;;) {
           Object.defineProperty(receiver, 'ctx', { configurable:true, value: summaryCallContext(ctx, summarizeArgs[1].session.id, route, { input, directive:directive+(qualityRetried?'\nThe previous response failed language or heading validation. Follow the summary task and language; return a factual summary beginning with a heading.':'') }) })

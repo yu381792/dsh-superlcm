@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.35 — 2026-10-14
+
+- 修复主对话模型兜底继承过大输出预算，按实际压缩输入、图片、文件、工具、用量校准和模型窗口限制输出预留。
+- 防止压缩结束写失败后宿主写出非法跨轮日志；阻止新轮次，并在正式持久化恢复入口按确切所有权证明补闭合，不修改旧事件、不重购已完成摘要。
+- 比例触发同时使用已有供应商用量校准，避免新增原文仍按粗略字数低估压力。
+- 增加可重复运行的真实 SDK 可靠性测试台，覆盖多窗口、连续工具、额度与超时回退、取消、保存失败及真实 JSONL 双进程恢复。
+
 ## 0.5.34 — 2026-10-14
 
 - Fix healthy multi-batch background jobs causing a main-request failure at 90%: evaluate safe completed prefixes after each batch instead of waiting for every successor. Keep the preceding ready prefix available while a new raw batch is generating.

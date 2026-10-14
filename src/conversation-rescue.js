@@ -27,7 +27,7 @@ export async function rescueWithConversation(engine,agent,parent) {
     const session=agent.session,measurement=engine.ctx.tokenMeter.measure(session)
     const priced=selectionPricing(measurement,session.requestHeader())
     const selection=selectRollingRange(priced.nodes,session.surface.nodes,{...policy,foldBatchTokens:Number.MAX_SAFE_INTEGER,
-      tailCount:1,retainTokenBudget:true,activeTokens:measurement.totalTokens,forceHard:true,
+      tailCount:1,retainTokenBudget:true,activeTokens:priced.activeTokens,forceHard:true,
       firstFoldableIndex:systemPrefixEndIndex(session),protectedFromIndex:latestUserIndex(session),
       isBalancedBefore:seq=>toolPairingBalancedBefore(session,seq),isBalancedAfter:seq=>toolPairingBalancedAfter(session,seq)})
     if(!selection)return null

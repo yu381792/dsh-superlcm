@@ -93,6 +93,11 @@ export class SuperLcmStore {
         session_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, data_json TEXT NOT NULL,
         status TEXT NOT NULL, updated_at INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS lcm_compaction_ownership (
+        session_id TEXT NOT NULL, compaction_id TEXT NOT NULL, start_seq INTEGER NOT NULL,
+        lifecycle_json TEXT NOT NULL, created_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id,compaction_id,start_seq)
+      );
       CREATE TABLE IF NOT EXISTS lcm_meta (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -398,6 +403,25 @@ export class SuperLcmStore {
     this.#assertOpen()
     return this.#db.prepare("INSERT INTO lcm_compaction_drafts VALUES (?,?,?,'ready',?) ON CONFLICT(session_id) DO NOTHING").run(sessionId,fingerprint,data,Date.now()).changes===1
   }
+  recordCommitOwnership(sessionId,startSeq,lifecycle) {
+    this.#assertOpen()
+    const data=JSON.stringify(lifecycle)
+    // Ownership must survive cancellation of a ready draft, and must reach
+    // durable storage before the first session lifecycle event can be written.
+    const prior=this.#db.prepare('PRAGMA synchronous').get().synchronous
+    try {
+      this.#db.exec('PRAGMA synchronous = FULL')
+      this.#db.prepare('INSERT OR IGNORE INTO lcm_compaction_ownership VALUES (?,?,?,?,?)').run(sessionId,lifecycle.compactionId,startSeq,data,Date.now())
+      const row=this.#db.prepare('SELECT lifecycle_json FROM lcm_compaction_ownership WHERE session_id=? AND compaction_id=? AND start_seq=?').get(sessionId,lifecycle.compactionId,startSeq)
+      if(!row||row.lifecycle_json!==data)throw Error('Compaction lifecycle ownership conflicts with its durable record')
+    }finally{this.#db.exec('PRAGMA synchronous = '+prior)}
+  }
+  commitOwnership(sessionId,compactionId,startSeq) {
+    this.#assertOpen()
+    const row=this.#db.prepare('SELECT lifecycle_json FROM lcm_compaction_ownership WHERE session_id=? AND compaction_id=? AND start_seq=?').get(sessionId,compactionId,startSeq)
+    return row?JSON.parse(row.lifecycle_json):null
+  }
+
   saveDraft(sessionId, fingerprint, data) {
     this.#assertOpen()
     this.#db.prepare(`INSERT INTO lcm_compaction_drafts VALUES (?,?,?,'ready',?)

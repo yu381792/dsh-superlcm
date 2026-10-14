@@ -12,11 +12,13 @@ import { markerFromSummary, appendRecallEnvelope } from './marker.js'
 import { nodeLevel, interruptedCompactionRecords } from './core.js'
 import { checkpointChild } from './summary-task.js'
 import { CHECKPOINT_PREAMBLE } from './checkpoint-frame.js'
+import {guardCommitLifecycle} from './commit-lifecycle.js'
 
 const SUMMARY_OPEN_TAG = '<compacted-summary>'
 const SUMMARY_CLOSE_TAG = '</compacted-summary>'
 
 export class AsyncSurfaceChangedError extends Error {}
+export class AsyncClosurePendingError extends Error {}
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex')
 export const sourceFingerprints = (session,seqs) => seqs.map(seq=>[seq,hash(session.eventAt(seq))])
 function noProgress(engine,sessionId,key,message) {
@@ -109,7 +111,7 @@ function inspectCompactionEntryState(session) {
   return { openTurn, unmatchedCompactionStart, latestEndSeedSeq }
 }
 
-function compactionBusy(session) {
+export function compactionBusy(session) {
   const state = inspectCompactionEntryState(session)
   return state.unmatchedCompactionStart !== undefined
     && !(state.latestEndSeedSeq !== undefined && state.latestEndSeedSeq > state.unmatchedCompactionStart.seq)
@@ -197,6 +199,8 @@ export function commitAsyncRegion(engine, agent, summarized) {
   locateStableSpan(engine, session, summarized)
   const { openTurn } = inspectCompactionEntryState(session)
   const lifecycle = { compactionId: summarized.compactionId, turn: openTurn }
+  engine.superLcmStore.recordCommitOwnership(session.id,session.seq,lifecycle)
+  guardCommitLifecycle(session,lifecycle)
   const startEvent = session.append('compaction/start', lifecycle)
   let closing = false
   try {
@@ -252,6 +256,7 @@ export function commitAsyncRegion(engine, agent, summarized) {
         // The unmatched start remains intentionally detectable by lcm_doctor.
       }
     }
+    if(closing)throw new AsyncClosurePendingError('压缩替换已完成，结束记录待恢复',{cause:error})
     throw error
   }
 }

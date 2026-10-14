@@ -11,6 +11,7 @@ export function selectionPricing(measurement, header) {
     : 1
   return {
     factor,
+    activeTokens:Math.max(measurement.totalTokens,Math.ceil((measurement.surfaceTokens+tools)*factor)),
     nodes: measurement.nodes.map(node => ({ ...node, tokens: Math.ceil(node.tokens * factor) })),
   }
 }

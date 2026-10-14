@@ -167,7 +167,7 @@ for(const restart of [false,true])test(`persistent end failure recovers ${restar
   await host(async h=>{
     const append=h.agent.session.append.bind(h.agent.session)
     h.agent.session.append=(type,...args)=>{if(type==='compaction/end')throw Error('Synthetic persistent end failure');return append(type,...args)}
-    assert.deepEqual(await send(h),[]);assert.equal(events(h,'compaction/end').length,0);verify(h,{closed:false})
+    const errors=await send(h);assert.ok(errors.length);assert.match(errors.map(e=>e.message).join(' '),/结束记录|persistent end/);assert.equal(events(h,'compaction/end').length,0);verify(h,{closed:false})
     const before=h.calls.length
     if(restart){seed=h.agent.session.snapshotEvents();dir=h.dir;return}
     h.agent.session.append=append

@@ -1,7 +1,7 @@
 import {SUMMARY_POLICY_VERSION} from './summary-policy.js'
 import { randomUUID } from 'node:crypto'
 import { nativePreStep, registerRequestBoundary } from './request-boundary.js'
-import { currentPolicy, latestUserIndex, pressureStep, resolvePolicy } from './ratio-runtime.js'
+import { currentPolicy, latestUserIndex, pressureStep, resolvePolicy, activeInputTokens } from './ratio-runtime.js'
 import { saveDraft, restoreDraft, finishDraft } from './draft-persistence.js'
 import { engineSchema } from './engine-schema.js'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
@@ -22,13 +22,16 @@ import {bindBackgroundCancellation} from './background-cancellation.js'
 import {rescueWithConversation} from './conversation-rescue.js'
 import { readControls, controlsConfig } from './controls-config.js'
 import { watchControls } from './controls-runtime.js'
+import {registerCommitRecovery} from './commit-lifecycle.js'
 import {
   AsyncSurfaceChangedError,
+  AsyncClosurePendingError,
   commitAsyncRegion,
   prepareAsyncRegion,
   summarizeAsyncRegion,
   minimumCheckpointTokens,
   recoverInterruptedCommit,
+  compactionBusy,
 } from './async-region.js'
 
 import { DEPRECATED_CONFIG_KEYS, FALLBACK_CONFIG_KEYS, ROLLING_CONFIG_KEYS, ROLLING_DEFAULTS, positiveInteger, nonNegativeInteger, normalizeRolling, cleanRouteValue, cleanRoute, routeIsComplete, routeIsConfigured, routesEqual, SETTINGS_NAMESPACE, SUMMARIZATION_ROUTE_SCHEMA, SETTINGS_SCHEMA, unwrapVolatile, unwrapConfig, splitConfig, systemPrefixEndIndex, isFrozenCheckpoint, firstFoldableSurfaceIndex, reportIndexFailure } from './engine-config.js'
@@ -62,6 +65,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     this.backgroundControllers = new Set()
     this.runtimeGeneration = 0
     this.warnedMissingBackgroundRoute = false
+    registerCommitRecovery(this)
     this.superlcmStore = this.superLcmStore
     // 兼容 dsh-lossless-context <= 0.2.x 的旧属性 / Compatibility property for dsh-lossless-context <= 0.2.x.
     this.losslessStore = this.superLcmStore
@@ -202,6 +206,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
   rescueWithConversation(agent,signal) { return rescueWithConversation(this,agent,signal) }
   canPrepareBackground(agent) {
     if(this.controlFile&&!this.config.auto)return false
+    if(compactionBusy(agent.session))return false
     const state = this.backgroundFolds.get(agent)
     return (!state || state.status === 'ready') && this.backgroundRouteConfigured() && this.summaryGuards.canStart(agent, this.summaryRouteFingerprint())
   }
@@ -281,7 +286,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       if (recovered) return recovered
     } catch { this.ctx.logger?.warn?.('已替换的压缩结束记录暂未写入，保留后续恢复'); return null }
     const pending = this.backgroundFolds.get(agent)
-    const activeTokens = options.allowPressure === true || options.force === true ? this.ctx.tokenMeter.measure(agent.session).totalTokens : 0
+    const activeTokens = options.allowPressure === true || options.force === true ? activeInputTokens(this,agent) : 0
     const emergency = policy.budgetMode === 'ratio' && activeTokens >= policy.hardActiveTokens
     const state = pending?.status === 'ready' ? pending : emergency ? pending?.recoveryReady : pending
     if (state && state.cutoffEnd === undefined && (activeTokens >= policy.softActiveTokens || options.force === true)) {
@@ -320,6 +325,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       if (!emergency || !Number.isFinite(projected) || projected >= policy.softActiveTokens) return null
     }
     try {
+      saveDraft(this,agent,state)
       const result = this.commitBackgroundSelection(agent, state.summarized)
       if (result === null) return null
       if (pending !== state) pending?.controller?.abort(Error('已提交完成的摘要前缀，未完成原文保留'))
@@ -329,6 +335,10 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       this.logFoldResult(this.ctx, result)
       return result
     } catch (error) {
+      if(error instanceof AsyncClosurePendingError){
+        pending?.controller?.abort(Error('已替换的前缀等待结束记录恢复'))
+        this.backgroundFolds.delete(agent)
+      }
       if (error instanceof AsyncSurfaceChangedError) this.backgroundFolds.delete(agent)
       this.compressionReporter.report(agent.session.id, error instanceof AsyncSurfaceChangedError ? 'discarded' : 'failed', state.selection)
       const message = error instanceof Error ? error.message : String(error)
@@ -416,7 +426,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
       foldBatchTokens: policy.foldBatchTokens,
       softActiveTokens: policy.softActiveTokens,
       hardActiveTokens: policy.hardActiveTokens,
-      activeTokens: measurement.totalTokens,
+      activeTokens:policy.budgetMode==='ratio'?priced.activeTokens:measurement.totalTokens,
       firstFoldableIndex: firstFoldableSurfaceIndex(session),
       protectedFromIndex: policy.protectLatestUser ? latestUserIndex(session) : undefined,
       isBalancedBefore: (seq) => toolPairingBalancedBefore(session, seq),
@@ -469,7 +479,7 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
     // At hard pressure, never reselect ranges already present in the assembled
     // draft. Otherwise the fallback blocks its own completed commit forever.
     if (staged?.parts?.length) return selection
-    if (selection !== null || (!forceHard && measurement.totalTokens < policy.hardActiveTokens)) return selection
+    if (selection !== null || (!forceHard && options.activeTokens < policy.hardActiveTokens)) return selection
     if (options.firstFoldableIndex <= systemEnd) return null
     return selectRollingRange(priced.nodes, session.surface.nodes, { ...options, firstFoldableIndex: systemEnd })
   }

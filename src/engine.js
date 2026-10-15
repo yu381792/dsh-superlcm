@@ -19,6 +19,7 @@ import { summaryContext } from './summary-model.js'
 import { summarizeWithRecall } from './engine-summary.js'
 import {abortable} from './summary-attempt.js'
 import {bindBackgroundCancellation} from './background-cancellation.js'
+import {retainUncompressibleTail} from './background-tail.js'
 import {rescueWithConversation} from './conversation-rescue.js'
 import { readControls, controlsConfig } from './controls-config.js'
 import { watchControls } from './controls-runtime.js'
@@ -267,7 +268,8 @@ export class SuperLcmCompactionEngine extends BasicCompactionEngine {
         if (this.backgroundFolds.get(agent) !== state) return
         this.compressionReporter.report(agent.session.id, controller.signal.aborted ? 'cancelled' : 'failed', selection)
         if (this.backgroundFolds.get(agent) === state) {
-          const recovered = state.recoveryReady ?? previous
+          const prior = state.recoveryReady ?? previous
+          const recovered = retainUncompressibleTail(this,agent,state,prior,error,policy) ?? prior
           if (recovered?.status === 'ready' && recovered.summarized && recovered.generation === this.runtimeGeneration && currentPolicy(this,agent)?.signature === recovered.signature) this.backgroundFolds.set(agent, recovered)
           else this.backgroundFolds.delete(agent)
         }

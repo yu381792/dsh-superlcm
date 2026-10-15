@@ -229,3 +229,51 @@ test('emergency commits a recovery prefix while a successor merge is pending; la
     assert.ok(!h.warnings.some(message=>/background summary failed/.test(message)))
   },{reply:async()=>++number===1?'Preserved historical facts and evidence. '.repeat(120):await new Promise(resolve=>{finish=resolve})})
 })
+
+for(const failCode of ['SUPERLCM_SUMMARY_NO_PROGRESS','TRANSPORT'])test('frozen small final leaf '+failCode+' preserves originals and only narrows no-progress range',async()=>host(async h=>{
+  const {raw,rest,state,policy}=await readyPrefix(h,{first:40000,tail:2400,fixed:200000})
+  const current=append(h.session,'Current protected request '+'c'.repeat(140000))
+  assert.ok(h.ctx.tokenMeter.measure(h.session).totalTokens>=policy.hardActiveTokens)
+  const original=structuredClone(h.session.snapshotEvents()),generation=h.session.surface.replaceGeneration
+  const readyCalls=h.calls.length
+  h.engine.summarizeBackgroundSelection=async()=>{const error=Error('synthetic final leaf failure');error.code=failCode;throw error}
+  const selection=h.engine.planRolling(h.agent)
+  assert.equal(selection.start,rest.seq);assert.equal(selection.end,rest.seq)
+  assert.ok(selection.foldTokens<policy.foldBatchTokens)
+  assert.ok(h.engine.startBackgroundFold(h.agent,selection))
+  await h.engine.settleBackgroundFold(h.agent)
+  const restored=h.engine.backgroundFolds.get(h.agent)
+  assert.equal(restored.cutoffEnd,failCode==='SUPERLCM_SUMMARY_NO_PROGRESS'?state.summarized.end:rest.seq)
+  if(failCode==='TRANSPORT')return
+  await pressureStep(h.engine,h.agent,new AbortController().signal)
+  assert.equal(h.session.surface.replaceGeneration,generation+1)
+  assert.ok(h.ctx.tokenMeter.measure(h.session).totalTokens<policy.hardActiveTokens)
+  assert.ok(h.session.surface.nodes.includes(rest.seq));assert.ok(h.session.surface.nodes.includes(current.seq));assert.ok(!h.session.surface.nodes.includes(raw.seq))
+  assertRetained(h,original);assert.equal(h.calls.length,readyCalls,'reuse completed prefix with no new summary purchases')
+  await pressureStep(h.engine,h.agent,new AbortController().signal)
+  assert.equal(h.session.surface.replaceGeneration,generation+1)
+}))
+
+test('real no-progress final leaf persists narrowed range and survives a fresh host without re-purchasing',async()=>{
+  let seed,db,original,currentSeq,tailSeq
+  let calls=0
+  await host(async h=>{
+    const {rest,state}=await readyPrefix(h,{first:40000,tail:2400,fixed:200000})
+    const current=append(h.session,'Current exact request '+'c'.repeat(140000))
+    const selection=h.engine.planRolling(h.agent)
+    assert.ok(h.engine.startBackgroundFold(h.agent,selection));await h.engine.settleBackgroundFold(h.agent)
+    assert.ok(h.warnings.some(message=>/summary is not smaller/.test(message)))
+    assert.equal(h.engine.backgroundFolds.get(h.agent).cutoffEnd,state.summarized.end)
+    assert.equal(JSON.parse(h.engine.superLcmStore.loadDraft(h.session.id).data).cutoffEnd,state.summarized.end)
+    seed=h.session.snapshotEvents();original=structuredClone(seed);db=h.db;currentSeq=current.seq;tailSeq=rest.seq
+    assert.equal(h.session.surface.replaceGeneration,0)
+  },{reply:async()=>++calls===1?'Preserved historical facts.':'Preserved historical facts. '.repeat(250)})
+  await host(async h=>{
+    await pressureStep(h.engine,h.agent,new AbortController().signal)
+    assert.equal(h.calls.length,0)
+    assert.equal(h.session.surface.replaceGeneration,1)
+    assert.ok(h.session.surface.nodes.includes(currentSeq));assert.ok(h.session.surface.nodes.includes(tailSeq));assertRetained(h,original)
+    const rebuilt=new SuperLcmStore(join(h.db,'..','rebuilt-tail.sqlite'))
+    try{assert.deepEqual(reindexSession(rebuilt,h.session).errors,[]);assert.equal(doctorSession(rebuilt,h.session).ok,true)}finally{rebuilt.close()}
+  },{db,seed})
+})
